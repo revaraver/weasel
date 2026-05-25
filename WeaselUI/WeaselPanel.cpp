@@ -1156,6 +1156,7 @@ LRESULT WeaselPanel::OnDestroy(UINT uMsg,
   m_hoverIndex = -1;
   m_lastMousePos = {-1, -1};
   m_sticky = false;
+  m_hasLastMoveToInputPos = false;
   delete m_layout;
   m_layout = NULL;
   return 0;
@@ -1172,6 +1173,11 @@ LRESULT WeaselPanel::OnDpiChanged(UINT uMsg,
 void WeaselPanel::MoveTo(RECT const& rc) {
   if (!m_layout)
     return;  // avoid handling nullptr in _RepositionWindow
+  if (m_hasLastMoveToInputPos && EqualRect(&m_lastMoveToInputPos, &rc) &&
+      !m_layout->ShouldDisplayStatusIcon())
+    return;
+  m_lastMoveToInputPos = rc;
+  m_hasLastMoveToInputPos = true;
   m_redraw_by_monitor_change = false;
   // The conditions for resetting the sticky state:
   // 1. When the input session ends (ctx.empty() is true)

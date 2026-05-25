@@ -39,6 +39,8 @@ UINT_PTR UIImpl::timer = 0;
 void UIImpl::Show() {
   if (!panel.IsWindow())
     return;
+  if (shown && panel.IsWindowVisible())
+    return;
   panel.ShowWindow(SW_SHOWNA);
   shown = true;
   if (timer) {
@@ -49,6 +51,8 @@ void UIImpl::Show() {
 
 void UIImpl::Hide() {
   if (!panel.IsWindow())
+    return;
+  if (!shown && !panel.IsWindowVisible())
     return;
   panel.ShowWindow(SW_HIDE);
   shown = false;
