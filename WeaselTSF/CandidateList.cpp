@@ -2,6 +2,7 @@
 
 #include "WeaselTSF.h"
 #include "CandidateList.h"
+#include "LatencyLog.h"
 #include <KeyEvent.h>
 #include <math.h>
 
@@ -199,22 +200,42 @@ STDMETHODIMP CCandidateList::FinalizeExactCompositionString() {
 }
 
 void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {
+  unsigned long long total_start = weasel_timing::QpcUs();
+  unsigned long long t0 = weasel_timing::QpcUs();
   if (_ui->style().inline_preedit) {
     _ui->style().client_caps |= weasel::INLINE_PREEDIT_CAPABLE;
   } else {
     _ui->style().client_caps &= ~weasel::INLINE_PREEDIT_CAPABLE;
   }
+  unsigned long long style_us = weasel_timing::QpcUs() - t0;
 
   /// In UWP, candidate window will only be shown
   /// if it is owned by active view window
   //_UpdateOwner();
+  t0 = weasel_timing::QpcUs();
   _ui->Update(ctx, status);
-  _UpdateUIElement();
+  unsigned long long ui_update_us = weasel_timing::QpcUs() - t0;
 
+  t0 = weasel_timing::QpcUs();
+  _UpdateUIElement();
+  unsigned long long ui_element_us = weasel_timing::QpcUs() - t0;
+
+  t0 = weasel_timing::QpcUs();
   if (status.composing)
     Show(_pbShow);
   else
     Show(FALSE);
+  unsigned long long show_us = weasel_timing::QpcUs() - t0;
+
+  unsigned long long total_us = weasel_timing::QpcUs() - total_start;
+  if (total_us >= 5000 || ui_update_us >= 5000 || ui_element_us >= 5000 || show_us >= 5000) {
+    weasel_timing::Logf("CandidateList.UpdateUI", total_us,
+                        "composing=%d cand=%zu highlighted=%zu style=%.3fms ui_update=%.3fms ui_element=%.3fms show=%.3fms",
+                        (int)status.composing, ctx.cinfo.candies.size(),
+                        ctx.cinfo.highlighted, style_us / 1000.0,
+                        ui_update_us / 1000.0, ui_element_us / 1000.0,
+                        show_us / 1000.0);
+  }
 }
 
 void CCandidateList::UpdateStyle(const UIStyle& sty) {
@@ -222,7 +243,14 @@ void CCandidateList::UpdateStyle(const UIStyle& sty) {
 }
 
 void CCandidateList::UpdateInputPosition(RECT const& rc) {
+  unsigned long long total_start = weasel_timing::QpcUs();
   _ui->UpdateInputPosition(rc);
+  unsigned long long total_us = weasel_timing::QpcUs() - total_start;
+  if (total_us >= 5000) {
+    weasel_timing::Logf("CandidateList.UpdateInputPosition", total_us,
+                        "rc=%ld,%ld,%ld,%ld", rc.left, rc.top, rc.right,
+                        rc.bottom);
+  }
 }
 
 void CCandidateList::Destroy() {
@@ -283,44 +311,83 @@ HRESULT CCandidateList::_UpdateUIElement() {
 }
 
 void CCandidateList::StartUI() {
+  unsigned long long total_start = weasel_timing::QpcUs();
+  unsigned long long t0 = weasel_timing::QpcUs();
   com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
+  unsigned long long get_thread_mgr_us = weasel_timing::QpcUs() - t0;
   if (!pThreadMgr) {
     return;
   }
 
   com_ptr<ITfUIElementMgr> pUIElementMgr;
+  t0 = weasel_timing::QpcUs();
   auto hr = pThreadMgr->QueryInterface(&pUIElementMgr);
+  unsigned long long qi_us = weasel_timing::QpcUs() - t0;
   if (FAILED(hr))
     return;
-
   if (pUIElementMgr == NULL) {
     return;
   }
 
+  t0 = weasel_timing::QpcUs();
   if (!_ui->uiCallback())
     _ui->SetUICallBack([this](size_t* const sel, size_t* const hov,
                               bool* const next, bool* const scroll_next) {
       _tsf->HandleUICallback(sel, hov, next, scroll_next);
     });
+  unsigned long long callback_us = weasel_timing::QpcUs() - t0;
+
+  t0 = weasel_timing::QpcUs();
   pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid);
+  unsigned long long begin_ui_us = weasel_timing::QpcUs() - t0;
   // pUIElementMgr->UpdateUIElement(uiid);
+  unsigned long long make_ui_us = 0;
   if (_pbShow) {
     _ui->style() = _style;
+    t0 = weasel_timing::QpcUs();
     _MakeUIWindow();
+    make_ui_us = weasel_timing::QpcUs() - t0;
+  }
+  unsigned long long total_us = weasel_timing::QpcUs() - total_start;
+  if (total_us >= 5000 || begin_ui_us >= 5000 || make_ui_us >= 5000) {
+    weasel_timing::Logf("CandidateList.StartUI", total_us,
+                        "pb_show=%d get_thread_mgr=%.3fms qi=%.3fms callback=%.3fms begin_ui=%.3fms make_ui=%.3fms",
+                        (int)_pbShow, get_thread_mgr_us / 1000.0,
+                        qi_us / 1000.0, callback_us / 1000.0,
+                        begin_ui_us / 1000.0, make_ui_us / 1000.0);
   }
 }
 
 void CCandidateList::EndUI() {
+  unsigned long long total_start = weasel_timing::QpcUs();
+  unsigned long long t0 = weasel_timing::QpcUs();
   com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
+  unsigned long long get_thread_mgr_us = weasel_timing::QpcUs() - t0;
+  unsigned long long qi_us = 0;
+  unsigned long long end_ui_us = 0;
   if (pThreadMgr) {
     com_ptr<ITfUIElementMgr> emgr;
+    t0 = weasel_timing::QpcUs();
     auto hr = pThreadMgr->QueryInterface(&emgr);
+    qi_us = weasel_timing::QpcUs() - t0;
     if (FAILED(hr))
       return;
-    if (emgr != NULL)
+    if (emgr != NULL) {
+      t0 = weasel_timing::QpcUs();
       emgr->EndUIElement(uiid);
+      end_ui_us = weasel_timing::QpcUs() - t0;
+    }
   }
+  t0 = weasel_timing::QpcUs();
   _DisposeUIWindow();
+  unsigned long long dispose_us = weasel_timing::QpcUs() - t0;
+  unsigned long long total_us = weasel_timing::QpcUs() - total_start;
+  if (total_us >= 5000 || end_ui_us >= 5000 || dispose_us >= 5000) {
+    weasel_timing::Logf("CandidateList.EndUI", total_us,
+                        "get_thread_mgr=%.3fms qi=%.3fms end_ui=%.3fms dispose=%.3fms",
+                        get_thread_mgr_us / 1000.0, qi_us / 1000.0,
+                        end_ui_us / 1000.0, dispose_us / 1000.0);
+  }
 }
 
 com_ptr<ITfContext> CCandidateList::GetContextDocument() {
