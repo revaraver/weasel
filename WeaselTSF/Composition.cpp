@@ -3,6 +3,7 @@
 #include "EditSession.h"
 #include "ResponseParser.h"
 #include "CandidateList.h"
+#include "LatencyLog.h"
 
 /* Start Composition */
 class CStartCompositionEditSession : public CEditSession {
@@ -159,20 +160,36 @@ class CGetTextExtentEditSession : public CEditSession {
 };
 
 STDAPI CGetTextExtentEditSession::DoEditSession(TfEditCookie ec) {
+  unsigned long long total_start = weasel_timing::QpcUs();
   com_ptr<ITfInsertAtSelection> pInsertAtSelection;
   com_ptr<ITfRange> pRangeComposition;
   ITfRange* pRange;
-  RECT rc;
-  BOOL fClipped;
+  RECT rc = {0};
+  BOOL fClipped = FALSE;
   TF_SELECTION selection;
   ULONG nSelection;
 
-  if (FAILED(_pContext->QueryInterface(IID_ITfInsertAtSelection,
-                                       (LPVOID*)&pInsertAtSelection)))
+  unsigned long long t0 = weasel_timing::QpcUs();
+  HRESULT hr_qi = _pContext->QueryInterface(IID_ITfInsertAtSelection,
+                                            (LPVOID*)&pInsertAtSelection);
+  unsigned long long qi_us = weasel_timing::QpcUs() - t0;
+  if (FAILED(hr_qi)) {
+    weasel_timing::Logf("GetTextExtent.DoEditSession", weasel_timing::QpcUs() - total_start,
+                        "failed=QueryInterface hr=0x%08X qi=%.3fms", (unsigned)hr_qi,
+                        qi_us / 1000.0);
     return E_FAIL;
-  if (FAILED(_pContext->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection,
-                                     &nSelection)))
+  }
+
+  t0 = weasel_timing::QpcUs();
+  HRESULT hr_sel = _pContext->GetSelection(ec, TF_DEFAULT_SELECTION, 1,
+                                           &selection, &nSelection);
+  unsigned long long get_selection_us = weasel_timing::QpcUs() - t0;
+  if (FAILED(hr_sel)) {
+    weasel_timing::Logf("GetTextExtent.DoEditSession", weasel_timing::QpcUs() - total_start,
+                        "failed=GetSelection hr=0x%08X qi=%.3fms get_selection=%.3fms",
+                        (unsigned)hr_sel, qi_us / 1000.0, get_selection_us / 1000.0);
     return E_FAIL;
+  }
 
   if (_pComposition != nullptr && _pComposition->GetRange(&pRange) == S_OK) {
     pRange->Collapse(ec, TF_ANCHOR_START);
@@ -182,8 +199,11 @@ STDAPI CGetTextExtentEditSession::DoEditSession(TfEditCookie ec) {
     pRange = selection.range;
   }
 
-  if ((_pContextView->GetTextExt(ec, pRange, &rc, &fClipped)) == S_OK &&
-      (rc.left != 0 || rc.top != 0)) {
+  t0 = weasel_timing::QpcUs();
+  HRESULT hr_ext = _pContextView->GetTextExt(ec, pRange, &rc, &fClipped);
+  unsigned long long get_text_ext_us = weasel_timing::QpcUs() - t0;
+  bool valid_rc = SUCCEEDED(hr_ext) && (rc.left != 0 || rc.top != 0);
+  if (valid_rc) {
     // get the foreground window pos and check if rc from GetTextExt is out of
     // window
     if (_enhancedPosition) {
@@ -208,14 +228,32 @@ STDAPI CGetTextExtentEditSession::DoEditSession(TfEditCookie ec) {
     }
     _pTextService->_SetCompositionPosition(rc);
   }
+
+  unsigned long long total_us = weasel_timing::QpcUs() - total_start;
+  if (total_us >= 5000 || get_selection_us >= 5000 || get_text_ext_us >= 5000) {
+    weasel_timing::Logf("GetTextExtent.DoEditSession", total_us,
+                        "hr_ext=0x%08X valid_rc=%d clipped=%d qi=%.3fms get_selection=%.3fms get_text_ext=%.3fms rc=%ld,%ld,%ld,%ld enhanced=%d",
+                        (unsigned)hr_ext, (int)valid_rc, (int)fClipped,
+                        qi_us / 1000.0, get_selection_us / 1000.0,
+                        get_text_ext_us / 1000.0, rc.left, rc.top, rc.right,
+                        rc.bottom, (int)_enhancedPosition);
+  }
   return S_OK;
 }
 
 /* Composition Window Handling */
 BOOL WeaselTSF::_UpdateCompositionWindow(com_ptr<ITfContext> pContext) {
+  unsigned long long total_start = weasel_timing::QpcUs();
   com_ptr<ITfContextView> pContextView;
-  if (pContext->GetActiveView(&pContextView) != S_OK)
+  unsigned long long t0 = weasel_timing::QpcUs();
+  HRESULT hr_view = pContext->GetActiveView(&pContextView);
+  unsigned long long get_active_view_us = weasel_timing::QpcUs() - t0;
+  if (hr_view != S_OK) {
+    weasel_timing::Logf("UpdateCompositionWindow", weasel_timing::QpcUs() - total_start,
+                        "failed=GetActiveView hr=0x%08X get_active_view=%.3fms",
+                        (unsigned)hr_view, get_active_view_us / 1000.0);
     return FALSE;
+  }
   com_ptr<CGetTextExtentEditSession> pEditSession;
   pEditSession.Attach(
       new CGetTextExtentEditSession(this, pContext, pContextView, _pComposition,
@@ -224,12 +262,22 @@ BOOL WeaselTSF::_UpdateCompositionWindow(com_ptr<ITfContext> pContext) {
     return FALSE;
   }
   HRESULT hr;
+  t0 = weasel_timing::QpcUs();
   pContext->RequestEditSession(_tfClientId, pEditSession,
                                TF_ES_ASYNCDONTCARE | TF_ES_READ, &hr);
+  unsigned long long request_edit_us = weasel_timing::QpcUs() - t0;
+  unsigned long long total_us = weasel_timing::QpcUs() - total_start;
+  if (total_us >= 5000 || get_active_view_us >= 5000 || request_edit_us >= 5000 || hr == TF_S_ASYNC) {
+    weasel_timing::Logf("UpdateCompositionWindow", total_us,
+                        "hr=0x%08X async=%d get_active_view=%.3fms request_edit_read=%.3fms",
+                        (unsigned)hr, (int)(hr == TF_S_ASYNC),
+                        get_active_view_us / 1000.0, request_edit_us / 1000.0);
+  }
   return SUCCEEDED(hr);
 }
 
 void WeaselTSF::_SetCompositionPosition(const RECT& rc) {
+  unsigned long long total_start = weasel_timing::QpcUs();
   /* Test if rect is valid.
    * If it is invalid during CUAS test, we need to apply CUAS workaround */
   if (!_fCUASWorkaroundTested) {
@@ -242,8 +290,19 @@ void WeaselTSF::_SetCompositionPosition(const RECT& rc) {
   RECT _rc;
   _rc.left = _rc.right = rc.left;
   _rc.top = _rc.bottom = rc.bottom;
+  unsigned long long t0 = weasel_timing::QpcUs();
   m_client.UpdateInputPosition(rc);
+  unsigned long long client_update_us = weasel_timing::QpcUs() - t0;
+  t0 = weasel_timing::QpcUs();
   _cand->UpdateInputPosition(rc);
+  unsigned long long cand_update_us = weasel_timing::QpcUs() - t0;
+  unsigned long long total_us = weasel_timing::QpcUs() - total_start;
+  if (total_us >= 5000 || client_update_us >= 5000 || cand_update_us >= 5000) {
+    weasel_timing::Logf("SetCompositionPosition", total_us,
+                        "client_update=%.3fms cand_update=%.3fms rc=%ld,%ld,%ld,%ld",
+                        client_update_us / 1000.0, cand_update_us / 1000.0,
+                        rc.left, rc.top, rc.right, rc.bottom);
+  }
 }
 
 /* Inline Preedit */
@@ -382,14 +441,28 @@ BOOL WeaselTSF::_InsertText(com_ptr<ITfContext> pContext,
 }
 
 void WeaselTSF::_UpdateComposition(com_ptr<ITfContext> pContext) {
+  unsigned long long total_start = weasel_timing::QpcUs();
   HRESULT hr;
 
   _pEditSessionContext = pContext;
 
+  unsigned long long t0 = weasel_timing::QpcUs();
   _pEditSessionContext->RequestEditSession(
       _tfClientId, this, TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &hr);
+  unsigned long long request_rw_us = weasel_timing::QpcUs() - t0;
   _async_edit = !!(hr == TF_S_ASYNC);
-  _UpdateCompositionWindow(pContext);
+
+  t0 = weasel_timing::QpcUs();
+  BOOL updated_window = _UpdateCompositionWindow(pContext);
+  unsigned long long update_window_us = weasel_timing::QpcUs() - t0;
+  unsigned long long total_us = weasel_timing::QpcUs() - total_start;
+  if (total_us >= 5000 || request_rw_us >= 5000 || update_window_us >= 5000 || hr == TF_S_ASYNC) {
+    weasel_timing::Logf("UpdateComposition", total_us,
+                        "hr=0x%08X async=%d request_rw=%.3fms update_window=%.3fms updated_window=%d composing=%d committed=%d",
+                        (unsigned)hr, (int)_async_edit, request_rw_us / 1000.0,
+                        update_window_us / 1000.0, (int)updated_window,
+                        (int)_status.composing, (int)_committed);
+  }
 }
 
 /* Composition State */
