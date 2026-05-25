@@ -40,8 +40,15 @@ bool PipeChannelBase::_Ensure() {
 
 HANDLE PipeChannelBase::_Connect(const wchar_t* name) {
   HANDLE pipe = INVALID_HANDLE_VALUE;
-  while (_Invalid(pipe = _TryConnect()))
-    ::WaitNamedPipe(name, 500);
+  // 最多重试 5 次，每次等 100ms，避免 WaitNamedPipe 无限阻塞 UI 线程
+  // 原来：无限循环 + 每次 500ms，是长时间运行后卡顿的主因
+  const int MAX_RETRY = 5;
+  int retry_count = 0;
+  while (_Invalid(pipe = _TryConnect())) {
+    if (++retry_count > MAX_RETRY)
+      _ThrowCode(ERROR_TIMEOUT);  // 超时放弃，不无限阻塞
+    ::WaitNamedPipe(name, 100);   // 100ms 比原来的 500ms 短很多
+  }
   DWORD mode = PIPE_READMODE_MESSAGE;
   if (!SetNamedPipeHandleState(pipe, &mode, NULL, NULL)) {
     _ThrowLastError;
@@ -73,7 +80,8 @@ size_t PipeChannelBase::_WritePipe(HANDLE pipe, size_t s, char* b) {
   if (!::WriteFile(pipe, b, s, &lwritten, NULL) || lwritten <= 0) {
     _ThrowLastError;
   }
-  ::FlushFileBuffers(pipe);
+  // 移除 FlushFileBuffers：Named Pipe MESSAGE 模式下 WriteFile 已保证消息完整性，
+  // 手动 flush 会同步阻塞等待服务端读取，是按键延迟的重要来源
   return lwritten;
 }
 
@@ -101,13 +109,28 @@ void PipeChannelBase::_Receive(HANDLE pipe, LPVOID msg, size_t rec_len) {
   _GetContext()->has_body = false;
 }
 
-HANDLE PipeChannelBase::_ConnectServerPipe(std::wstring& pn) {
-  HANDLE pipe =
-      CreateNamedPipe(pn.c_str(), PIPE_ACCESS_DUPLEX,
-                      PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-                      PIPE_UNLIMITED_INSTANCES, buff_size, buff_size, 0, sa);
-  if (pipe == INVALID_HANDLE_VALUE || !::ConnectNamedPipe(pipe, NULL)) {
+
+HANDLE PipeChannelBase::_CreateServerPipeHandle(std::wstring& pn) {
+  // 只创建管道实例，不等待连接，供 Listen 预先准备下一个实例
+  HANDLE pipe = CreateNamedPipe(pn.c_str(), PIPE_ACCESS_DUPLEX,
+                                PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+                                PIPE_UNLIMITED_INSTANCES, buff_size, buff_size, 0, sa);
+  if (_Invalid(pipe))
     _ThrowLastError;
+  return pipe;
+}
+
+HANDLE PipeChannelBase::_ConnectServerPipe(std::wstring& pn) {
+  HANDLE pipe = _CreateServerPipeHandle(pn);
+  BOOL connected = ::ConnectNamedPipe(pipe, NULL);
+  if (!connected) {
+    DWORD err = GetLastError();
+    // ERROR_PIPE_CONNECTED：客户端在 ConnectNamedPipe 调用前已连接
+    // 管道依然可用，原代码将此错误误判为失败直接关掉了管道
+    if (err != ERROR_PIPE_CONNECTED) {
+      CloseHandle(pipe);
+      _ThrowCode(err);
+    }
   }
   return pipe;
 }

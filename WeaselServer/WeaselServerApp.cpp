@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "WeaselServerApp.h"
 #include <filesystem>
+#include <fstream>
 
 WeaselServerApp::WeaselServerApp()
     : m_handler(std::make_unique<RimeWithWeaselHandler>(&m_ui)),
@@ -13,8 +14,15 @@ WeaselServerApp::WeaselServerApp()
 WeaselServerApp::~WeaselServerApp() {}
 
 int WeaselServerApp::Run() {
+  // 启动标记：如果 C:\weasel_timing.log 出现这行，说明新版 WeaselServer 正在运行
+  {
+    std::ofstream f("C:\\weasel_timing.log", std::ios::app);
+    if (f) { f << "=== WeaselServer started (instrumented build) ===\n"; f.flush(); }
+  }
+
   if (!m_server.Start())
     return -1;
+
 
   // win_sparkle_set_appcast_url("http://localhost:8000/weasel/update/appcast.xml");
   win_sparkle_set_registry_path("Software\\Rime\\Weasel\\Updates");

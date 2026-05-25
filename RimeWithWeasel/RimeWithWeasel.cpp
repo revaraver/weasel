@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include <logging.h>
 #include <RimeWithWeasel.h>
 #include <StringAlgorithm.hpp>
@@ -72,8 +72,8 @@ void _LoadAppOptions(RimeConfig* config, AppOptionsByAppName& app_options);
 
 void _RefreshTrayIcon(const RimeSessionId session_id,
                       const std::function<void()> _UpdateUICallback) {
-  // Dangerous, don't touch
-  static char app_name[256] = {0};
+  // 改为栈变量，消除多线程 data race（原来 static 变量被多个线程并发写入）
+  char app_name[256] = {0};
   auto ret = rime_api->get_property(session_id, "client_app", app_name,
                                     sizeof(app_name) - 1);
   if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))

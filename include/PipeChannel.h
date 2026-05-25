@@ -36,7 +36,9 @@ class PipeChannelBase {
   size_t _WritePipe(HANDLE p, size_t s, char* b);
   void _FinalizePipe(HANDLE& p);
   void _Receive(HANDLE pipe, LPVOID msg, size_t rec_len);
-  /* Try to get a connection from client */
+  /* 只创建管道实例，不调用 ConnectNamedPipe（供 Listen 预创建下一实例使用） */
+  HANDLE _CreateServerPipeHandle(std::wstring& pn);
+  /* 创建并等待客户端连接 */
   HANDLE _ConnectServerPipe(std::wstring& pn);
   inline bool _Invalid(HANDLE p) const { return p == INVALID_HANDLE_VALUE; }
 

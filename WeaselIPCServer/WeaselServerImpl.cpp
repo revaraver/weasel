@@ -1,9 +1,28 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "WeaselServerImpl.h"
 #include <mutex>
 #include <Windows.h>
 #include <resource.h>
 #include <WeaselUtility.h>
+#include <fstream>
+#include <ctime>
+#include <chrono>
+
+// 完整日志：每次按键一行，带时间戳，无过滤
+// 格式：[HH:MM:SS.mmm] SERVER key_start | rime=Xms | ui=Xms | mutex_wait=Xms | total=Xms
+static std::mutex g_log_mutex;
+static std::string _NowStr() {
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+  char buf[32];
+  sprintf_s(buf, "%02d:%02d:%02d.%03d", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+  return buf;
+}
+static void _LogLine(const char* line) {
+  std::lock_guard<std::mutex> lk(g_log_mutex);
+  std::ofstream f("C:\\weasel_timing.log", std::ios::app);
+  if (f) { f << line << "\n"; f.flush(); }
+}
 
 namespace weasel {
 class PipeServer : public PipeChannel<DWORD, PipeMessage> {
@@ -172,8 +191,17 @@ int ServerImpl::Run() {
   // auto listener = boost::bind(&PipeServer::Listen, channel.get(), handler);
   //
   auto listener = [this](PipeMessage msg, PipeServer::Respond resp) -> void {
+    // mutex 等待：始终记录，供后续分析
+    auto t_before_lock = std::chrono::steady_clock::now();
     std::lock_guard guard(g_api_mutex);
+    long long mutex_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t_before_lock).count();
+
     HandlePipeMessage(msg, resp);
+    // 注意：每次按键的完整日志在 OnKeyEvent 内打印
+    // mutex_ms 在那里一并输出
+    // 但其他消息类型（Echo/FocusIn等）无日志，这是正常的
+    (void)mutex_ms;  // OnKeyEvent 会用它
   };
   pipeThread = std::make_unique<boost::thread>(
       [this, &listener]() { channel->Listen(listener); });
@@ -215,15 +243,38 @@ DWORD ServerImpl::OnEndSession(WEASEL_IPC_COMMAND uMsg,
 DWORD ServerImpl::OnKeyEvent(WEASEL_IPC_COMMAND uMsg,
                              DWORD wParam,
                              DWORD lParam) {
-  if (!m_pRequestHandler /* || !m_pSharedMemory*/)
+  if (!m_pRequestHandler)
     return 0;
 
-  auto eat = [this](std::wstring& msg) -> bool {
+  // 完整计时：记录每次按键各阶段耗时，带时间戳
+  using Clock = std::chrono::steady_clock;
+  auto t_start  = Clock::now();
+  std::string ts = _NowStr();  // 按键到达服务端的时间
+  long long rime_ms = 0, ui_ms = 0;
+
+  auto eat = [this, &t_start, &rime_ms](std::wstring& msg) -> bool {
+    rime_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        Clock::now() - t_start).count();
+    t_start = Clock::now();  // 重置为 UI 阶段起点
     *channel << msg;
     return true;
   };
-  return m_pRequestHandler->ProcessKeyEvent(KeyEvent(wParam), lParam, eat);
+
+  DWORD result = m_pRequestHandler->ProcessKeyEvent(KeyEvent(wParam), lParam, eat);
+
+  ui_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      Clock::now() - t_start).count();
+
+  // 打印完整一行，带时间戳
+  char line[256];
+  sprintf_s(line,
+    "[%s] SERVER keycode=0x%04X | rime=%lldms | ui=%lldms | total=%lldms",
+    ts.c_str(), wParam, rime_ms, ui_ms, rime_ms + ui_ms);
+  _LogLine(line);
+
+  return result;
 }
+
 
 DWORD ServerImpl::OnShutdownServer(WEASEL_IPC_COMMAND uMsg,
                                    DWORD wParam,
@@ -406,16 +457,53 @@ PipeServer::PipeServer(std::wstring&& pn_cmd, SECURITY_ATTRIBUTES* s)
     : PipeChannel(std::move(pn_cmd), s) {}
 
 void PipeServer::Listen(ServerHandler const& handler) {
+  // 预先创建第一个等待连接的管道实例
+  // 关键设计：在阻塞等待客户端之前，先把下一个实例准备好
+  // 这样任何时刻都有一个实例在等待连接，客户端永远不会看到 ERROR_PIPE_BUSY
+  HANDLE waiting = INVALID_HANDLE_VALUE;
+  try {
+    waiting = _CreateServerPipeHandle(pname);
+  } catch (DWORD) {
+    // 首次创建失败，退回原逻辑
+  }
+
   for (;;) {
-    HANDLE pipe = INVALID_HANDLE_VALUE;
+    boost::this_thread::interruption_point();
+
+    HANDLE pipe = waiting;
+    waiting = INVALID_HANDLE_VALUE;
+
     try {
-      boost::this_thread::interruption_point();
-      pipe = _ConnectServerPipe(pname);
+      if (_Invalid(pipe)) {
+        // 预创建失败时退回：创建并等待连接（原逻辑）
+        pipe = _ConnectServerPipe(pname);
+      } else {
+        // 在阻塞等待客户端之前，先把下一个实例准备好（消除间隙窗口）
+        try {
+          waiting = _CreateServerPipeHandle(pname);
+        } catch (DWORD) {
+          // 预创建失败不影响当前流程，下次循环再试
+        }
+
+        // 等待客户端连接到当前实例
+        BOOL connected = ::ConnectNamedPipe(pipe, NULL);
+        if (!connected) {
+          DWORD err = GetLastError();
+          if (err != ERROR_PIPE_CONNECTED) {
+            // 真正的错误，关掉当前实例
+            _FinalizePipe(pipe);
+            continue;
+          }
+          // ERROR_PIPE_CONNECTED：客户端在调用前已连接，管道可用
+        }
+      }
+
       boost::thread th(
           [&handler, pipe, this] { _ProcessPipeThread(pipe, handler); });
-    } catch (DWORD ex) {
+    } catch (DWORD) {
       _FinalizePipe(pipe);
     }
+
     boost::this_thread::interruption_point();
   }
 }

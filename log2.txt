@@ -1,0 +1,41 @@
+﻿93eec2d fix(WeaselTFS): Always update UIElements.
+022f749 fix(WeaselUI): hover will be triggered, when panel is first created with mouse on some candidate, event mouse not moved, incomplete edit of b3d161e
+9b2943c fix(WeaselUI): candies.size() might larger then MAX_CANDIDATE_COUNT
+5ffbae1 fix(WeaselUI): fix clipboard memory issue
+b3d161e fix(WeaselUI): hover is triggered when mouse not moved
+cbe3aab perf(WeaselUI): GdiplusBlur with openmp
+193a9ad fix(WeaselUI): mark metrics of fullscreenlayout
+7da19f2 ci: merge ci ymls
+bccdff6 fix(WeaselServer): WinSparkle will always open ReleaseNoteUrl in default browser, bundled it with patch
+74eb272 refactor(RimeWithWeasel): remove useless code for ime
+5f96fae fix(RimeWithWeasel): join_maintenance_thread to avoid hanging
+47ed6b1 fix(WeaselTSF): multi WeaselServer might be started
+d636e0a refactor: drop WeaselIME (#1775)
+f701308 perf(RimeWithWeasel): improve performance of RimeWithWeaselHandler::_Respond
+b2b4a38 refactor(RimeWithWeasel): _RimeParseStringOptWithFallback with std::array to enhance performance, with constexpr reference input
+c4c2aaf refactor(RimeWithWeasel): use static global rime_api
+31e741c refactor(RimeWithWeasel): less memory copy by reference for some funcs
+fb2998e refactor(RimeWithWeasel): improve readability and _RimeGetColor performance
+b0d0e86 fix(WeaselTSF): couldnot open directory with default file manager but only explorer
+4eca2ac perf(WeaselIPC): optimize message transmission with dynamic sizing
+6b37e97 fix(RimeWithWeasel): tip not shown correctly when margin set nagative, incomplete edit
+f84af93 chore: fix warnings for x64 compilation
+d13f74e build(xmake): disable full path for __FILE__ macro
+773113a fix(WeaselIPC): resources of PipeChannelBase concurrent modification
+da1ef1c fix(RimeWithWeasel): tip not shown correctly when margin set nagative, and show_notifications not work correctly
+a10c058 build: WeaselServer link with libs not dependent objs
+e573a0a build: version info define for rc files only
+6164dbf build: handle xmake runtime warnings
+ce29333 build(xmake): remove .xmake-cache (#1762)
+4783148 fix(WeaselSetup): typo in if condiction
+b77f4bd fix(RimeWithWeasel): Make static variable access thread-safe with std::lock_guard
+4210a7a fix(WeaselUI): fix#1672, The candidate box is in the wrong position
+2d2fdd9 refactor(RimeWithWeasel): Reduce redundant _GetCandidateInfo() calls by computing candidates once per context. (#1750)
+ef9c8b3 fix(WeaselTSF): client dump caused by dereferencing nullptr during CEndCompositionEditSession::DoEditSession
+49811d3 fix(UI): hang by unexpected nullptr in StandardLayout calculation
+8b88df2 ci: change runner back to 2022
+c127fa7 fix: localtime warnings
+dc99071 revert: 0d20317 and #1281
+35cd09c ci: fix ci actions caused by runner updating (#1645)
+7bd62cd ci: incomplete edit
+4e264d9 ci: update runner windows-2019 to windows-latest

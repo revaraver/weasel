@@ -1,0 +1,646 @@
+﻿commit 4eca2ac97a0b3df78cb2c2f7ac7fa7cc0cb77f28
+Author: fxliang <fx.liang@outlook.com>
+Date:   Thu Jan 29 09:25:59 2026 +0800
+
+    perf(WeaselIPC): optimize message transmission with dynamic sizing
+    
+     transmit only actual payload bytes
+
+diff --git a/include/PipeChannel.h b/include/PipeChannel.h
+index dac2f03..b747a49 100644
+--- a/include/PipeChannel.h
++++ b/include/PipeChannel.h
+@@ -154,7 +154,16 @@ class PipeChannel : public PipeChannelBase {
+     DWORD lwritten = 0;
+ 
+     *reinterpret_cast<Msg*>(pbuff) = msg;
+-    size_t data_sz = ctx->has_body ? buff_size : _MsgSize;
++    size_t body_bytes = 0;
++    if (ctx->has_body && ctx->write_stream) {
++      std::streampos pos = ctx->write_stream->tellp();
++      if (pos != std::streampos(-1)) {
++        body_bytes = static_cast<size_t>(pos) * sizeof(wchar_t);
++      }
++    }
++    size_t data_sz = ctx->has_body ? (_MsgSize + body_bytes) : _MsgSize;
++    if (data_sz > buff_size)
++      data_sz = buff_size;
+ 
+     try {
+       _WritePipe(pipe, data_sz, pbuff);
+
+commit 773113a52d2f68244cd3575889b4c6f063f79d8b
+Author: fxliang <fx.liang@outlook.com>
+Date:   Wed Jan 21 10:47:10 2026 +0800
+
+    fix(WeaselIPC): resources of PipeChannelBase concurrent modification
+
+diff --git a/WeaselIPC/PipeChannel.cpp b/WeaselIPC/PipeChannel.cpp
+index c3912a5..8687e87 100644
+--- a/WeaselIPC/PipeChannel.cpp
++++ b/WeaselIPC/PipeChannel.cpp
+@@ -18,32 +18,18 @@ using namespace boost;
+ PipeChannelBase::PipeChannelBase(std::wstring&& pn_cmd,
+                                  size_t bs = 4 * 1024,
+                                  SECURITY_ATTRIBUTES* s = NULL)
+-    : pname(pn_cmd),
+-      write_stream(nullptr),
+-      buff_size(bs),
+-      buffer(std::make_unique<char[]>(bs)),
+-      hpipe(INVALID_HANDLE_VALUE),
+-      has_body(false),
+-      sa(s) {};
+-
+-PipeChannelBase::PipeChannelBase(PipeChannelBase&& r)
+-    : write_stream(std::move(r.write_stream)),
+-      pname(std::move(r.pname)),
+-      buff_size(r.buff_size),
+-      buffer(std::move(r.buffer)),
+-      hpipe(r.hpipe),
+-      has_body(r.has_body),
+-      sa(r.sa) {};
++    : pname(pn_cmd), buff_size(bs), sa(s) {};
+ 
+ PipeChannelBase::~PipeChannelBase() {
+-  _FinalizePipe(hpipe);
++  // Thread-specific pointers are cleaned up automatically
+ }
+ 
+ bool PipeChannelBase::_Ensure() {
+   try {
+-    if (_Invalid(hpipe)) {
+-      hpipe = _Connect(pname.c_str());
+-      return !_Invalid(hpipe);
++    HANDLE* phandle = _GetPipeHandle();
++    if (_Invalid(*phandle)) {
++      *phandle = _Connect(pname.c_str());
++      return !_Invalid(*phandle);
+     }
+   } catch (...) {
+     return false;
+@@ -64,7 +50,8 @@ HANDLE PipeChannelBase::_Connect(const wchar_t* name) {
+ }
+ 
+ void PipeChannelBase::_Reconnect() {
+-  _FinalizePipe(hpipe);
++  HANDLE* phandle = _GetPipeHandle();
++  _FinalizePipe(*phandle);
+   _Ensure();
+ }
+ 
+@@ -104,13 +91,14 @@ void PipeChannelBase::_Receive(HANDLE pipe, LPVOID msg, size_t rec_len) {
+   if (!success) {
+     _ThrowIfNot(ERROR_MORE_DATA);
+ 
+-    memset(buffer.get(), 0, buff_size);
+-    success = ::ReadFile(pipe, buffer.get(), buff_size, &lread, NULL);
++    auto ctx = _GetContext();
++    memset(ctx->buffer.get(), 0, buff_size);
++    success = ::ReadFile(pipe, ctx->buffer.get(), buff_size, &lread, NULL);
+     if (!success) {
+       _ThrowLastError;
+     }
+   }
+-  has_body = false;
++  _GetContext()->has_body = false;
+ }
+ 
+ HANDLE PipeChannelBase::_ConnectServerPipe(std::wstring& pn) {
+diff --git a/include/PipeChannel.h b/include/PipeChannel.h
+index bebc73a..dac2f03 100644
+--- a/include/PipeChannel.h
++++ b/include/PipeChannel.h
+@@ -4,6 +4,7 @@
+ #include <windows.h>
+ #include <boost/interprocess/streams/bufferstream.hpp>
+ #include <boost/thread.hpp>
++#include <boost/thread/tss.hpp>
+ 
+ namespace weasel {
+ 
+@@ -11,8 +12,16 @@ class PipeChannelBase {
+  public:
+   using Stream = boost::interprocess::wbufferstream;
+ 
++  struct ChannelContext {
++    std::unique_ptr<char[]> buffer;
++    std::unique_ptr<Stream> write_stream;
++    bool has_body;
++
++    ChannelContext(size_t bs)
++        : buffer(std::make_unique<char[]>(bs)), has_body(false) {}
++  };
++
+   PipeChannelBase(std::wstring&& pn_cmd, size_t bs, SECURITY_ATTRIBUTES* s);
+-  PipeChannelBase(PipeChannelBase&& r);
+   ~PipeChannelBase();
+ 
+  protected:
+@@ -31,14 +40,27 @@ class PipeChannelBase {
+   HANDLE _ConnectServerPipe(std::wstring& pn);
+   inline bool _Invalid(HANDLE p) const { return p == INVALID_HANDLE_VALUE; }
+ 
++  HANDLE* _GetPipeHandle() const {
++    if (!hpipe_ptr.get()) {
++      hpipe_ptr.reset(new HANDLE(INVALID_HANDLE_VALUE));
++    }
++    return hpipe_ptr.get();
++  }
++
++  ChannelContext* _GetContext() const {
++    if (!context.get()) {
++      context.reset(new ChannelContext(buff_size));
++    }
++    return context.get();
++  }
++
+  protected:
+   std::wstring pname;
+-  HANDLE hpipe;
+-
+-  bool has_body;
++  // Thread-local pipe handle for isolation
++  mutable boost::thread_specific_ptr<HANDLE> hpipe_ptr;
+   const size_t buff_size;
+-  std::unique_ptr<char[]> buffer;
+-  std::unique_ptr<Stream> write_stream;
++  // Thread-local context for buffer and state
++  mutable boost::thread_specific_ptr<ChannelContext> context;
+ 
+  private:
+   /* Security attributes */
+@@ -71,14 +93,20 @@ class PipeChannel : public PipeChannelBase {
+   /* Common pipe operations */
+ 
+   bool Connect() { return _Ensure(); }
+-  bool Connected() const { return !_Invalid(hpipe); }
+-  void Disconnect() { _FinalizePipe(hpipe); }
++  bool Connected() const {
++    HANDLE* phandle = _GetPipeHandle();
++    return !_Invalid(*phandle);
++  }
++  void Disconnect() {
++    HANDLE* phandle = _GetPipeHandle();
++    _FinalizePipe(*phandle);
++  }
+ 
+   /* Write data to buffer */
+ 
+   template <typename _TyWrite>
+   void Write(_TyWrite cnt) {
+-    has_body = true;
++    _GetContext()->has_body = true;
+     _BufferWriteStream() << cnt;
+   }
+ 
+@@ -91,21 +119,22 @@ class PipeChannel : public PipeChannelBase {
+ 
+   _TyRes Transact(Msg& msg) {
+     _Ensure();
+-    _Send(hpipe, msg);
++    HANDLE* phandle = _GetPipeHandle();
++    _Send(*phandle, msg);
+     return _ReceiveResponse();
+   }
+ 
+   void ClearBufferStream() {
+-    has_body = false;
+-    if (write_stream != nullptr) {
+-      delete write_stream.release();
+-      write_stream.reset(nullptr);
++    auto ctx = _GetContext();
++    ctx->has_body = false;
++    if (ctx->write_stream != nullptr) {
++      ctx->write_stream.reset(nullptr);
+     }
+   }
+ 
+-  char* SendBuffer() const { return buffer.get() + _MsgSize; }
++  char* SendBuffer() const { return _GetContext()->buffer.get() + _MsgSize; }
+ 
+-  char* ReceiveBuffer() const { return buffer.get() + _ResSize; }
++  char* ReceiveBuffer() const { return _GetContext()->buffer.get() + _ResSize; }
+ 
+   template <typename _TyHandler>
+   bool HandleResponseData(_TyHandler const& handler) {
+@@ -114,17 +143,18 @@ class PipeChannel : public PipeChannelBase {
+     }
+ 
+     // Use whole buffer to receive data in client
+-    return handler((LPWSTR)buffer.get(),
++    return handler((LPWSTR)_GetContext()->buffer.get(),
+                    (UINT)(buff_size * sizeof(char) / sizeof(wchar_t)));
+   }
+ 
+  protected:
+   void _Send(HANDLE pipe, Msg& msg) {
+-    char* pbuff = buffer.get();
++    auto ctx = _GetContext();
++    char* pbuff = ctx->buffer.get();
+     DWORD lwritten = 0;
+ 
+     *reinterpret_cast<Msg*>(pbuff) = msg;
+-    size_t data_sz = has_body ? buff_size : _MsgSize;
++    size_t data_sz = ctx->has_body ? buff_size : _MsgSize;
+ 
+     try {
+       _WritePipe(pipe, data_sz, pbuff);
+@@ -136,19 +166,21 @@ class PipeChannel : public PipeChannelBase {
+   }
+ 
+   _TyRes _ReceiveResponse() {
++    HANDLE* phandle = _GetPipeHandle();
+     _TyRes result;
+-    _Receive(hpipe, &result, sizeof(result));
++    _Receive(*phandle, &result, sizeof(result));
+     return result;
+   }
+ 
+   Stream& _BufferWriteStream() {
+-    if (write_stream == nullptr) {
+-      char* pbuff = (char*)buffer.get() + _MsgSize;
++    auto ctx = _GetContext();
++    if (ctx->write_stream == nullptr) {
++      char* pbuff = (char*)ctx->buffer.get() + _MsgSize;
+       memset(pbuff, 0, buff_size - _MsgSize);
+-      write_stream =
++      ctx->write_stream =
+           std::make_unique<Stream>((wchar_t*)pbuff, _SendBufferSizeW());
+     }
+-    return *write_stream;
++    return *ctx->write_stream;
+   }
+ 
+  private:
+
+commit f701308ee0deb45994eafa95355e5a2ea9e429c2
+Author: fxliang <fx.liang@outlook.com>
+Date:   Wed Jan 28 17:31:24 2026 +0800
+
+    perf(RimeWithWeasel): improve performance of RimeWithWeaselHandler::_Respond
+    
+    - less memory allocations
+    - less u8tow references
+    - less IPC references, only 2 times most, not nuymber of line count
+    - escape_string by reference not copy
+    - less container overhead for actions
+    - less recalculations in preedit processes
+
+diff --git a/RimeWithWeasel/RimeWithWeasel.cpp b/RimeWithWeasel/RimeWithWeasel.cpp
+index e6e9c2b..84080de 100644
+--- a/RimeWithWeasel/RimeWithWeasel.cpp
++++ b/RimeWithWeasel/RimeWithWeasel.cpp
+@@ -8,6 +8,7 @@
+ #include <filesystem>
+ #include <map>
+ #include <array>
++#include <vector>
+ #include <regex>
+ #include <rime_api.h>
+ 
+@@ -750,35 +751,42 @@ inline std::string _GetLabelText(const std::vector<Text>& labels,
+ }
+ 
+ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
+-  std::set<std::string> actions;
+-  std::list<std::string> messages;
++  std::wstring body;
++  body.reserve(4096);
++  std::vector<const char*> actions;
++  actions.reserve(8);
+ 
+   SessionStatus& session_status = get_session_status(ipc_id);
+   RimeSessionId session_id = session_status.session_id;
+   RIME_STRUCT(RimeCommit, commit);
+   if (rime_api->get_commit(session_id, &commit)) {
+-    actions.insert("commit");
+-
+-    std::string commit_text = escape_string<char>(commit.text);
+-    messages.push_back(std::string("commit=") + commit_text + '\n');
++    actions.push_back("commit");
++    std::wstring commit_text_w = escape_string(u8tow(commit.text));
++    body.append(L"commit=").append(commit_text_w).append(L"\n");
+     rime_api->free_commit(&commit);
+   }
+ 
+   bool is_composing = false;
+   RIME_STRUCT(RimeStatus, status);
++  static const std::wstring Bool_wstring[] = {L"0", L"1"};
+   if (rime_api->get_status(session_id, &status)) {
+     is_composing = !!status.is_composing;
+-    actions.insert("status");
+-    messages.push_back(std::string("status.ascii_mode=") +
+-                       std::to_string(status.is_ascii_mode) + '\n');
+-    messages.push_back(std::string("status.composing=") +
+-                       std::to_string(status.is_composing) + '\n');
+-    messages.push_back(std::string("status.disabled=") +
+-                       std::to_string(status.is_disabled) + '\n');
+-    messages.push_back(std::string("status.full_shape=") +
+-                       std::to_string(status.is_full_shape) + '\n');
+-    messages.push_back(std::string("status.schema_id=") +
+-                       std::string(status.schema_id) + '\n');
++    actions.push_back("status");
++    body.append(L"status.ascii_mode=")
++        .append(Bool_wstring[!!status.is_ascii_mode])
++        .append(L"\n")
++        .append(L"status.composing=")
++        .append(Bool_wstring[!!status.is_composing])
++        .append(L"\n")
++        .append(L"status.disabled=")
++        .append(Bool_wstring[!!status.is_disabled])
++        .append(L"\n")
++        .append(L"status.full_shape=")
++        .append(Bool_wstring[!!status.is_full_shape])
++        .append(L"\n")
++        .append(L"status.schema_id=")
++        .append(status.schema_id ? u8tow(status.schema_id) : std::wstring())
++        .append(L"\n");
+     if (m_global_ascii_mode &&
+         (session_status.status.is_ascii_mode != status.is_ascii_mode)) {
+       for (auto& pair : m_session_status_map) {
+@@ -799,79 +807,93 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
+       _GetCandidateInfo(cinfo, ctx);
+     }
+     if (is_composing) {
+-      actions.insert("ctx");
++      const auto& preedit = ctx.composition.preedit;
++      const auto& start = ctx.composition.sel_start;
++      const auto& end = ctx.composition.sel_end;
++      const auto& cursor = ctx.composition.cursor_pos;
++      static const auto u8towstring = [](const char* u8str, int len = 0) {
++        return std::to_wstring(utf8towcslen(u8str, len));
++      };
++      actions.push_back("ctx");
+       switch (session_status.style.preedit_type) {
+-        case UIStyle::PREVIEW:
+-          if (ctx.commit_text_preview != NULL) {
+-            std::string first = ctx.commit_text_preview;
+-            messages.push_back(std::string("ctx.preedit=") +
+-                               escape_string<char>(first) + '\n');
+-            messages.push_back(
+-                std::string("ctx.preedit.cursor=") +
+-                std::to_string(utf8towcslen(first.c_str(), 0)) + ',' +
+-                std::to_string(utf8towcslen(first.c_str(), (int)first.size())) +
+-                ',' +
+-                std::to_string(utf8towcslen(first.c_str(), (int)first.size())) +
+-                '\n');
++        case UIStyle::PREVIEW: {
++          if (ctx.commit_text_preview) {
++            const char* first_utf8 = ctx.commit_text_preview;
++            const size_t first_len = std::strlen(first_utf8);
++            const std::wstring first_w = escape_string(u8tow(first_utf8));
++            const std::wstring tmp = u8towstring(first_utf8, (int)first_len);
++            body.append(L"ctx.preedit=")
++                .append(first_w)
++                .append(L"\n")
++                .append(L"ctx.preedit.cursor=")
++                .append(u8towstring(first_utf8, 0))
++                .append(L",")
++                .append(tmp)
++                .append(L",")
++                .append(tmp)
++                .append(L"\n");
+             break;
+           }
+           // no preview, fall back to composition
+-        case UIStyle::COMPOSITION:
+-          messages.push_back(std::string("ctx.preedit=") +
+-                             escape_string<char>(ctx.composition.preedit) +
+-                             '\n');
+-          if (ctx.composition.sel_start <= ctx.composition.sel_end) {
+-            messages.push_back(
+-                std::string("ctx.preedit.cursor=") +
+-                std::to_string(utf8towcslen(ctx.composition.preedit,
+-                                            ctx.composition.sel_start)) +
+-                ',' +
+-                std::to_string(utf8towcslen(ctx.composition.preedit,
+-                                            ctx.composition.sel_end)) +
+-                ',' +
+-                std::to_string(utf8towcslen(ctx.composition.preedit,
+-                                            ctx.composition.cursor_pos)) +
+-                '\n');
++        }
++        case UIStyle::COMPOSITION: {
++          body.append(L"ctx.preedit=")
++              .append(escape_string(u8tow(preedit)))
++              .append(L"\n");
++          if (start <= end) {
++            body.append(L"ctx.preedit.cursor=")
++                .append(u8towstring(preedit, start))
++                .append(L",")
++                .append(u8towstring(preedit, end))
++                .append(L",")
++                .append(u8towstring(preedit, cursor))
++                .append(L"\n");
+           }
+           break;
+-        case UIStyle::PREVIEW_ALL:
+-          std::string topush = std::string("ctx.preedit=") +
+-                               escape_string<char>(ctx.composition.preedit) +
+-                               "  [";
++        }
++        case UIStyle::PREVIEW_ALL: {
++          body.append(L"ctx.preedit=")
++              .append(escape_string(u8tow(preedit)))
++              .append(L"  [");
++          auto label_valid = session_status.style.label_font_point > 0;
++          auto comment_valid = session_status.style.comment_font_point > 0;
++          const std::wstring mark_text_w =
++              session_status.style.mark_text.empty()
++                  ? std::wstring(L"*")
++                  : session_status.style.mark_text;
+           for (auto i = 0; i < ctx.menu.num_candidates; i++) {
+-            std::string label =
+-                session_status.style.label_font_point > 0
+-                    ? _GetLabelText(
+-                          cinfo.labels, i,
+-                          session_status.style.label_text_format.c_str())
+-                    : "";
+-            std::string comment = session_status.style.comment_font_point > 0
+-                                      ? wtou8(cinfo.comments.at(i).str)
+-                                      : "";
+-            std::string mark_text = session_status.style.mark_text.empty()
+-                                        ? "*"
+-                                        : wtou8(session_status.style.mark_text);
+-            std::string prefix =
+-                (i != ctx.menu.highlighted_candidate_index) ? "" : mark_text;
+-            topush += " " + prefix + escape_string(label) +
+-                      escape_string<char>(ctx.menu.candidates[i].text) + " " +
+-                      escape_string(comment);
++            std::wstring label_w;
++            if (label_valid) {
++              wchar_t buf_lbl[128];
++              swprintf_s<128>(buf_lbl,
++                              session_status.style.label_text_format.c_str(),
++                              cinfo.labels.at(i).str.c_str());
++              label_w = std::wstring(buf_lbl);
++            }
++            std::wstring comment_w =
++                comment_valid ? cinfo.comments.at(i).str : std::wstring();
++            std::wstring prefix_w = (i != ctx.menu.highlighted_candidate_index)
++                                        ? std::wstring()
++                                        : mark_text_w;
++            body.append(L" ")
++                .append(prefix_w)
++                .append(escape_string(label_w))
++                .append(escape_string(u8tow(ctx.menu.candidates[i].text)))
++                .append(L" ")
++                .append(escape_string(comment_w));
+           }
+-          messages.push_back(topush + " ]\n");
+-          if (ctx.composition.sel_start <= ctx.composition.sel_end) {
+-            messages.push_back(
+-                std::string("ctx.preedit.cursor=") +
+-                std::to_string(utf8towcslen(ctx.composition.preedit,
+-                                            ctx.composition.sel_start)) +
+-                ',' +
+-                std::to_string(utf8towcslen(ctx.composition.preedit,
+-                                            ctx.composition.sel_end)) +
+-                ',' +
+-                std::to_string(utf8towcslen(ctx.composition.preedit,
+-                                            ctx.composition.cursor_pos)) +
+-                '\n');
++          body.append(L" ]\n");
++          if (start <= end) {
++            body.append(L"ctx.preedit.cursor=")
++                .append(u8towstring(preedit, start))
++                .append(L",")
++                .append(u8towstring(preedit, end))
++                .append(L",")
++                .append(u8towstring(preedit, cursor))
++                .append(L"\n");
+           }
+           break;
++        }
+       }
+     }
+     if (has_candidates) {
+@@ -880,16 +902,17 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
+ 
+       oa << cinfo;
+ 
+-      messages.push_back(std::string("ctx.cand=") + wtou8(ss.str()) + '\n');
++      auto s = ss.str();
++      body.append(L"ctx.cand=").append(std::move(s)).append(L"\n");
+     }
+     rime_api->free_context(&ctx);
+   }
+ 
+   // configuration information
+-  actions.insert("config");
+-  messages.push_back(std::string("config.inline_preedit=") +
+-                     std::to_string((int)session_status.style.inline_preedit) +
+-                     '\n');
++  actions.push_back("config");
++  body.append(L"config.inline_preedit=")
++      .append(std::to_wstring((int)session_status.style.inline_preedit))
++      .append(L"\n");
+ 
+   // style
+   if (!session_status.__synced) {
+@@ -897,28 +920,33 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
+     boost::archive::text_woarchive oa(ss);
+     oa << session_status.style;
+ 
+-    actions.insert("style");
+-    messages.push_back(std::string("style=") + wtou8(ss.str().c_str()) + '\n');
++    actions.push_back("style");
++    body.append(L"style=").append(ss.str()).append(L"\n");
+     session_status.__synced = true;
+   }
+ 
+-  // summarize
+-
++  // summarize: send header first to avoid vector head-insert cost
++  std::wstring header;
+   if (actions.empty()) {
+-    messages.insert(messages.begin(), std::string("action=noop\n"));
++    header = L"action=noop\n";
+   } else {
+-    std::string actionList(join(actions, ","));
+-    messages.insert(messages.begin(),
+-                    std::string("action=") + actionList + '\n');
++    std::string actionList;
++    actionList.reserve(64);
++    for (size_t i = 0; i < actions.size(); ++i) {
++      if (i > 0)
++        actionList += ',';
++      actionList += actions[i];
++    }
++    header = std::wstring(L"action=") + u8tow(actionList) + L"\n";
+   }
++  if (!eat(header))
++    return false;
+ 
+-  messages.push_back(std::string(".\n"));
++  body.append(L".\n");
++  if (!eat(body))
++    return false;
+ 
+-  return std::all_of(messages.begin(), messages.end(),
+-                     [&eat](std::string& msg) {
+-                       auto wmsg = u8tow(msg);
+-                       return eat(wmsg);
+-                     });
++  return true;
+ }
+ 
+ // Blend foreground and background ARGB colors taking alpha into account.
+diff --git a/include/WeaselUtility.h b/include/WeaselUtility.h
+index aa2c29c..742f157 100755
+--- a/include/WeaselUtility.h
++++ b/include/WeaselUtility.h
+@@ -143,7 +143,7 @@ const wchar_t EscapeChar<wchar_t>::tab_escape = L't';
+ 
+ template <typename CharT>
+ inline std::basic_string<CharT> escape_string(
+-    const std::basic_string<CharT> input) {
++    const std::basic_string<CharT>& input) {
+   using Esc = EscapeChar<CharT>;
+   std::basic_stringstream<CharT> res;
+   for (auto p = input.begin(); p != input.end(); ++p) {
+
+commit 2d2fdd915143110131a62be75502efcecf4fe55b
+Author: MokapSing <39441028+MokOopsing@users.noreply.github.com>
+Date:   Fri Dec 19 11:26:19 2025 +0800
+
+    refactor(RimeWithWeasel): Reduce redundant _GetCandidateInfo() calls by computing candidates once per context. (#1750)
+
+diff --git a/RimeWithWeasel/RimeWithWeasel.cpp b/RimeWithWeasel/RimeWithWeasel.cpp
+index 1c1b64f..1b88c36 100644
+--- a/RimeWithWeasel/RimeWithWeasel.cpp
++++ b/RimeWithWeasel/RimeWithWeasel.cpp
+@@ -789,6 +789,11 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
+ 
+   RIME_STRUCT(RimeContext, ctx);
+   if (rime_api->get_context(session_id, &ctx)) {
++    bool has_candidates = ctx.menu.num_candidates > 0;
++    CandidateInfo cinfo;
++    if (has_candidates) {
++      _GetCandidateInfo(cinfo, ctx);
++    }
+     if (is_composing) {
+       actions.insert("ctx");
+       switch (session_status.style.preedit_type) {
+@@ -826,8 +831,6 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
+           }
+           break;
+         case UIStyle::PREVIEW_ALL:
+-          CandidateInfo cinfo;
+-          _GetCandidateInfo(cinfo, ctx);
+           std::string topush = std::string("ctx.preedit=") +
+                                escape_string<char>(ctx.composition.preedit) +
+                                "  [";
+@@ -867,11 +870,9 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
+           break;
+       }
+     }
+-    if (ctx.menu.num_candidates) {
+-      CandidateInfo cinfo;
++    if (has_candidates) {
+       std::wstringstream ss;
+       boost::archive::text_woarchive oa(ss);
+-      _GetCandidateInfo(cinfo, ctx);
+ 
+       oa << cinfo;
+ 

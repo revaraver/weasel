@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 
 #include <WeaselIPCData.h>
 #include <thread>
@@ -236,7 +236,17 @@ void WeaselTSF::_Reconnect() {
 static unsigned int retry = 0;
 
 bool WeaselTSF::_EnsureServerConnected() {
+  DWORD now = GetTickCount();
+
+  // 缓存有效期内且上次连接正常，直接放行，不再每次按键都同步 ping 服务端
+  // 这是长时间运行后卡顿的关键缓解：避免每次按键都触发一次完整的 IPC 往返
+  if (_lastEchoOk && (now - _lastEchoTick) < ECHO_CACHE_MS) {
+    return true;
+  }
+
+  // 缓存过期或上次失败，重新做 Echo 检测
   if (!m_client.Echo()) {
+    _lastEchoOk = false;  // 标记缓存无效
     _Reconnect();
     retry++;
     if (retry >= 6) {
@@ -263,7 +273,7 @@ bool WeaselTSF::_EnsureServerConnected() {
         std::thread th([dir, this]() {
           ShellExecuteW(NULL, L"open", (dir + L"\\start_service.bat").c_str(),
                         NULL, dir.c_str(), SW_HIDE);
-          // wait 500ms, then reconnect
+          // 等待 500ms 再重连
           std::this_thread::sleep_for(std::chrono::milliseconds(500));
           _Reconnect();
         });
@@ -274,8 +284,14 @@ bool WeaselTSF::_EnsureServerConnected() {
       }
       retry = 0;
     }
-    return (m_client.Echo() != 0);
+    // 重连后再次检测，更新缓存
+    _lastEchoOk = (m_client.Echo() != 0);
+    _lastEchoTick = GetTickCount();
+    return _lastEchoOk;
   } else {
+    // Echo 成功，更新缓存时间戳
+    _lastEchoOk = true;
+    _lastEchoTick = now;
     return true;
   }
 }

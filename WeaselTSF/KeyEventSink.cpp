@@ -3,10 +3,28 @@
 #include "WeaselTSF.h"
 #include <KeyEvent.h>
 #include "CandidateList.h"
+#include <chrono>
+#include <fstream>
+#include <mutex>
 
 static weasel::KeyEvent prevKeyEvent;
 static BOOL prevfEaten = FALSE;
 static int keyCountToSimulate = 0;
+
+// 客户端计时日志：写到独立文件，每次按键一行，带时间戳，无过滤
+// 格式: [HH:MM:SS.mmm] CLIENT pid=X keycode=0x.. | ensure=Xms | ipc=Xms | total=Xms
+static std::mutex g_client_log_mutex;
+static std::string _ClientNowStr() {
+  SYSTEMTIME st; GetLocalTime(&st);
+  char buf[32];
+  sprintf_s(buf, "%02d:%02d:%02d.%03d", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+  return buf;
+}
+static void _ClientLogLine(const char* line) {
+  std::lock_guard<std::mutex> lk(g_client_log_mutex);
+  std::ofstream f("C:\\weasel_client_timing.log", std::ios::app);
+  if (f) { f << line << "\n"; f.flush(); }
+}
 
 void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
   // when _IsKeyboardDisabled don't eat the key,
@@ -16,26 +34,33 @@ void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
     return;
   }
 
-  // if server connection is Not OK, don't eat it.
+  using Clock = std::chrono::steady_clock;
+  auto t_start = Clock::now();
+  std::string ts = _ClientNowStr();
+  long long ensure_ms = 0, ipc_ms = 0;
+
   if (!_EnsureServerConnected()) {
     *pfEaten = FALSE;
     return;
   }
+  ensure_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      Clock::now() - t_start).count();
+  auto t_after_ensure = Clock::now();
+
   weasel::KeyEvent ke;
   GetKeyboardState(_lpbKeyState);
   if (!ConvertKeyEvent(static_cast<UINT>(wParam), lParam, _lpbKeyState, ke)) {
-    /* Unknown key event */
     *pfEaten = FALSE;
   } else {
-    // cheet key code when vertical auto reverse happened, swap up and down
     if (_cand->GetIsReposition()) {
-      if (ke.keycode == ibus::Up)
-        ke.keycode = ibus::Down;
-      else if (ke.keycode == ibus::Down)
-        ke.keycode = ibus::Up;
+      if (ke.keycode == ibus::Up)   ke.keycode = ibus::Down;
+      else if (ke.keycode == ibus::Down) ke.keycode = ibus::Up;
     }
-    if (!keyCountToSimulate)
+    if (!keyCountToSimulate) {
       *pfEaten = (BOOL)m_client.ProcessKeyEvent(ke);
+      ipc_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+          Clock::now() - t_after_ensure).count();
+    }
 
     if (ke.keycode == ibus::Caps_Lock) {
       if (prevKeyEvent.keycode == ibus::Caps_Lock && prevfEaten == TRUE &&
@@ -53,14 +78,21 @@ void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
         }
         *pfEaten = TRUE;
       }
-      if (keyCountToSimulate)
-        keyCountToSimulate--;
+      if (keyCountToSimulate) keyCountToSimulate--;
     }
-
     prevfEaten = *pfEaten;
     prevKeyEvent = ke;
   }
+
+  // 无论如何都记录这次按键的完整时序
+  char line[256];
+  sprintf_s(line,
+    "[%s] CLIENT pid=%lu keycode=0x%04X | ensure=%lldms | ipc=%lldms | total=%lldms",
+    ts.c_str(), GetCurrentProcessId(), (unsigned)wParam, ensure_ms, ipc_ms, ensure_ms + ipc_ms);
+  _ClientLogLine(line);
 }
+
+
 
 STDAPI WeaselTSF::OnSetFocus(BOOL fForeground) {
   if (fForeground)

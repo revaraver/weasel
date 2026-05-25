@@ -233,4 +233,9 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BOOL _async_edit = false;
   BOOL _committed = false;
   BOOL _isToOpenClose = false;
+
+  // Echo 连接状态缓存，避免每次按键都同步 ping 服务端
+  DWORD _lastEchoTick = 0;
+  bool _lastEchoOk = false;
+  static constexpr DWORD ECHO_CACHE_MS = 2000;  // 缓存有效期 2 秒
 };
