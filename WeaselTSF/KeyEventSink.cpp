@@ -322,8 +322,18 @@ BOOL WeaselTSF::_TryHandleRevarTransparentKey(ITfContext* pContext,
   if (IsTransparentCandidateKey(ke)) {
     BOOL eaten = (BOOL)m_client.ProcessKeyEvent(ke);
     _UpdateComposition(pContext);
-    *pfEaten = eaten;
-    return eaten;
+    if (!eaten) {
+      std::wstringstream dbg;
+      dbg << L"transparent boundary key clears raw shadow keycode="
+          << ke.keycode << L" mask=" << ke.mask << L" shadow="
+          << _revarShadowBuffer;
+      WriteRevarDebugLog(dbg.str());
+      _DetachShadowBuffer(pContext);
+      *pfEaten = FALSE;
+      return TRUE;
+    }
+    *pfEaten = TRUE;
+    return TRUE;
   }
 
   // Symbols and other native-editing boundary keys keep the already typed raw
