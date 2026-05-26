@@ -276,6 +276,43 @@ bool IsForegroundGodotHost() {
   return cached_is_godot;
 }
 
+static constexpr ULONG_PTR REVAR_IME_COPYDATA_REPLACE_BEFORE_CARET = 0x52564952; // "RVIR" / ReVar IME Replace.
+
+struct RevarImeReplaceBeforeCaretPayload {
+  uint32_t version;
+  uint32_t raw_length;
+  uint32_t text_utf16_length;
+};
+
+bool SendRevarGodotDirectText(LONG rawLength, const std::wstring& text) {
+  HWND hwnd = GetForegroundWindow();
+  if (!hwnd)
+    return false;
+
+  std::vector<BYTE> payload(sizeof(RevarImeReplaceBeforeCaretPayload) +
+                            text.length() * sizeof(wchar_t));
+  auto* header = reinterpret_cast<RevarImeReplaceBeforeCaretPayload*>(payload.data());
+  header->version = 1;
+  header->raw_length = static_cast<uint32_t>(rawLength < 0 ? 0 : rawLength);
+  header->text_utf16_length = static_cast<uint32_t>(text.length());
+  if (!text.empty()) {
+    memcpy(payload.data() + sizeof(RevarImeReplaceBeforeCaretPayload),
+           text.data(), text.length() * sizeof(wchar_t));
+  }
+
+  COPYDATASTRUCT copy_data = {};
+  copy_data.dwData = REVAR_IME_COPYDATA_REPLACE_BEFORE_CARET;
+  copy_data.cbData = static_cast<DWORD>(payload.size());
+  copy_data.lpData = payload.data();
+
+  DWORD_PTR result = 0;
+  LRESULT sent = SendMessageTimeoutW(hwnd, WM_COPYDATA, 0,
+                                     reinterpret_cast<LPARAM>(&copy_data),
+                                     SMTO_ABORTIFHUNG | SMTO_BLOCK, 200,
+                                     &result);
+  return sent != 0 && result == TRUE;
+}
+
 void SendRevarUnicodeText(const std::wstring& text) {
   std::vector<INPUT> inputs;
   inputs.reserve(text.length() * 2);
@@ -348,7 +385,9 @@ BOOL WeaselTSF::_TryHandleRevarTransparentKey(ITfContext* pContext,
     m_client.ProcessKeyEvent(ke);
     std::wstring raw(1, static_cast<wchar_t>(ke.keycode));
     if (IsForegroundGodotHost()) {
-      SendRevarUnicodeText(raw);
+      if (!SendRevarGodotDirectText(0, raw)) {
+        SendRevarUnicodeText(raw);
+      }
     } else {
       _InsertRevarRawText(pContext, raw);
     }
