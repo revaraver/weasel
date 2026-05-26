@@ -185,6 +185,10 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   void _DetachShadowBuffer(com_ptr<ITfContext> pContext);
   BOOL _ReplaceRevarShadowBufferWithText(com_ptr<ITfContext> pContext,
                                           const std::wstring& text);
+  BOOL _ReplaceRevarShadowBufferWithTextInEditSession(
+      com_ptr<ITfContext> pContext,
+      TfEditCookie ec,
+      const std::wstring& text);
   BOOL _InsertRevarRawText(com_ptr<ITfContext> pContext,
                            const std::wstring& text);
 

@@ -4,6 +4,56 @@
 #include "ResponseParser.h"
 #include "CandidateList.h"
 
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
+#include <vector>
+
+namespace {
+void WriteRevarDebugLog(const std::wstring& line) {
+  WCHAR temp[MAX_PATH] = {0};
+  if (!GetTempPathW(ARRAYSIZE(temp), temp))
+    return;
+  std::wstring path = std::wstring(temp) + L"revar_input_tsf_debug.log";
+  std::wofstream out(path, std::ios::app);
+  if (!out)
+    return;
+  out << GetTickCount64() << L" " << line << std::endl;
+}
+
+void SendRevarFallbackReplacement(LONG shadowLength, const std::wstring& text) {
+  std::vector<INPUT> inputs;
+  inputs.reserve(static_cast<size_t>(shadowLength) * 2 + text.length() * 2);
+
+  for (LONG i = 0; i < shadowLength; ++i) {
+    INPUT down = {};
+    down.type = INPUT_KEYBOARD;
+    down.ki.wVk = VK_BACK;
+    inputs.push_back(down);
+
+    INPUT up = down;
+    up.ki.dwFlags = KEYEVENTF_KEYUP;
+    inputs.push_back(up);
+  }
+
+  for (wchar_t ch : text) {
+    INPUT down = {};
+    down.type = INPUT_KEYBOARD;
+    down.ki.wScan = ch;
+    down.ki.dwFlags = KEYEVENTF_UNICODE;
+    inputs.push_back(down);
+
+    INPUT up = down;
+    up.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+    inputs.push_back(up);
+  }
+
+  if (!inputs.empty()) {
+    SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+  }
+}
+}  // namespace
+
 /* Start Composition */
 class CStartCompositionEditSession : public CEditSession {
  public:
@@ -365,6 +415,62 @@ STDMETHODIMP CReplaceRevarShadowEditSession::DoEditSession(TfEditCookie ec) {
   tfSelection.style.fInterimChar = FALSE;
   _pContext->SetSelection(ec, 1, &tfSelection);
   return S_OK;
+}
+
+BOOL WeaselTSF::_ReplaceRevarShadowBufferWithTextInEditSession(
+    com_ptr<ITfContext> pContext,
+    TfEditCookie ec,
+    const std::wstring& text) {
+  LONG shadowLength = static_cast<LONG>(_revarShadowBuffer.length());
+  TF_SELECTION tfSelection;
+  ULONG fetched = 0;
+  if (FAILED(pContext->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &tfSelection,
+                                    &fetched)) ||
+      fetched == 0 || tfSelection.range == nullptr) {
+    std::wstringstream dbg;
+    dbg << L"replace direct no_selection fallback shadow_len=" << shadowLength
+        << L" text=" << text;
+    WriteRevarDebugLog(dbg.str());
+    _revarShadowBuffer.clear();
+    SendRevarFallbackReplacement(shadowLength, text);
+    return FALSE;
+  }
+
+  com_ptr<ITfRange> pRange = tfSelection.range;
+  pRange->Collapse(ec, TF_ANCHOR_START);
+  if (shadowLength > 0) {
+    LONG shifted = 0;
+    HRESULT hr = pRange->ShiftStart(ec, -shadowLength, &shifted, nullptr);
+    std::wstringstream dbg;
+    dbg << L"replace direct shift shadow_len=" << shadowLength
+        << L" shifted=" << shifted << L" hr=0x" << std::hex << hr
+        << L" text=" << text;
+    WriteRevarDebugLog(dbg.str());
+    if (FAILED(hr) || std::labs(shifted) < shadowLength) {
+      _revarShadowBuffer.clear();
+      SendRevarFallbackReplacement(shadowLength, text);
+      return FALSE;
+    }
+  }
+
+  HRESULT hr = pRange->SetText(ec, TF_ST_CORRECTION, text.c_str(),
+                               static_cast<LONG>(text.length()));
+  if (FAILED(hr)) {
+    std::wstringstream dbg;
+    dbg << L"replace direct settext fallback shadow_len=" << shadowLength
+        << L" hr=0x" << std::hex << hr << L" text=" << text;
+    WriteRevarDebugLog(dbg.str());
+    _revarShadowBuffer.clear();
+    SendRevarFallbackReplacement(shadowLength, text);
+    return FALSE;
+  }
+
+  pRange->Collapse(ec, TF_ANCHOR_END);
+  tfSelection.range = pRange;
+  tfSelection.style.ase = TF_AE_NONE;
+  tfSelection.style.fInterimChar = FALSE;
+  pContext->SetSelection(ec, 1, &tfSelection);
+  return TRUE;
 }
 
 BOOL WeaselTSF::_ReplaceRevarShadowBufferWithText(com_ptr<ITfContext> pContext,

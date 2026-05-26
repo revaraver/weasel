@@ -47,7 +47,8 @@ STDAPI WeaselTSF::DoEditSession(TfEditCookie ec) {
       WriteRevarDebugLog(dbg.str());
 
       if (!commit.empty()) {
-        _ReplaceRevarShadowBufferWithText(_pEditSessionContext, commit);
+        _ReplaceRevarShadowBufferWithTextInEditSession(_pEditSessionContext,
+                                                       ec, commit);
         _revarShadowBuffer.clear();
         _committed = TRUE;
       } else {
