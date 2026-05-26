@@ -175,7 +175,15 @@ class WeaselTSF : public ITfTextInputProcessorEx,
                                 LPARAM lParam,
                                 BOOL keyDown,
                                 BOOL* pfEaten);
+  BOOL _TryHandleRevarTransparentKey(ITfContext* pContext,
+                                     WPARAM wParam,
+                                     LPARAM lParam,
+                                     BOOL keyDown,
+                                     BOOL* pfEaten);
+  BOOL _IsRevarTransparentModeEnabled();
   void _DetachShadowBuffer(com_ptr<ITfContext> pContext);
+  BOOL _ReplaceRevarShadowBufferWithText(com_ptr<ITfContext> pContext,
+                                          const std::wstring& text);
 
   BOOL _InitPreservedKey();
   void _UninitPreservedKey();
@@ -210,6 +218,9 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BYTE _lpbKeyState[256];
   BOOL _fTestKeyDownPending, _fTestKeyUpPending;
   BOOL _fRevarDetachKeyPending;
+  BOOL _fRevarTransparentKeyDownPending;
+  BOOL _fRevarTransparentUIActive;
+  std::wstring _revarShadowBuffer;
 
   com_ptr<ITfContext> _pEditSessionContext;
   std::wstring _editSessionText;

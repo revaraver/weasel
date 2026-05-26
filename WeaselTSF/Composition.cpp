@@ -321,6 +321,67 @@ BOOL WeaselTSF::_ShowInlinePreedit(
   return TRUE;
 }
 
+class CReplaceRevarShadowEditSession : public CEditSession {
+ public:
+  CReplaceRevarShadowEditSession(com_ptr<WeaselTSF> pTextService,
+                                 com_ptr<ITfContext> pContext,
+                                 LONG shadowLength,
+                                 const std::wstring& text)
+      : CEditSession(pTextService, pContext),
+        _shadowLength(shadowLength),
+        _text(text) {}
+
+  STDMETHODIMP DoEditSession(TfEditCookie ec);
+
+ private:
+  LONG _shadowLength;
+  std::wstring _text;
+};
+
+STDMETHODIMP CReplaceRevarShadowEditSession::DoEditSession(TfEditCookie ec) {
+  TF_SELECTION tfSelection;
+  ULONG fetched = 0;
+  if (FAILED(_pContext->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &tfSelection,
+                                     &fetched)) ||
+      fetched == 0 || tfSelection.range == nullptr) {
+    return E_FAIL;
+  }
+
+  com_ptr<ITfRange> pRange = tfSelection.range;
+  pRange->Collapse(ec, TF_ANCHOR_START);
+  if (_shadowLength > 0) {
+    LONG shifted = 0;
+    pRange->ShiftStart(ec, -_shadowLength, &shifted, nullptr);
+  }
+
+  if (FAILED(pRange->SetText(ec, TF_ST_CORRECTION, _text.c_str(),
+                             static_cast<LONG>(_text.length())))) {
+    return E_FAIL;
+  }
+
+  pRange->Collapse(ec, TF_ANCHOR_END);
+  tfSelection.range = pRange;
+  tfSelection.style.ase = TF_AE_NONE;
+  tfSelection.style.fInterimChar = FALSE;
+  _pContext->SetSelection(ec, 1, &tfSelection);
+  return S_OK;
+}
+
+BOOL WeaselTSF::_ReplaceRevarShadowBufferWithText(com_ptr<ITfContext> pContext,
+                                                  const std::wstring& text) {
+  auto shadowLength = static_cast<LONG>(_revarShadowBuffer.length());
+  com_ptr<CReplaceRevarShadowEditSession> pEditSession;
+  pEditSession.Attach(
+      new CReplaceRevarShadowEditSession(this, pContext, shadowLength, text));
+  if (pEditSession != NULL) {
+    HRESULT hr;
+    pContext->RequestEditSession(_tfClientId, pEditSession,
+                                 TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &hr);
+    return SUCCEEDED(hr);
+  }
+  return FALSE;
+}
+
 /* Update Composition */
 class CInsertTextEditSession : public CEditSession {
  public:

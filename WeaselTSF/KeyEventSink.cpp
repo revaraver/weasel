@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <string>
 #include <vector>
 
 static weasel::KeyEvent prevKeyEvent;
@@ -39,6 +40,30 @@ std::string NormalizeToken(std::string s) {
     return static_cast<char>(std::toupper(c));
   });
   return s;
+}
+
+std::string ToLower(std::string s) {
+  s = Trim(s);
+  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return s;
+}
+
+bool ParseBool(std::string s, bool fallback = false) {
+  s = ToLower(s);
+  if (s == "true" || s == "yes" || s == "on" || s == "1")
+    return true;
+  if (s == "false" || s == "no" || s == "off" || s == "0")
+    return false;
+  return fallback;
+}
+
+std::string ValueAfterColon(const std::string& s) {
+  auto pos = s.find(':');
+  if (pos == std::string::npos)
+    return "";
+  return Trim(s.substr(pos + 1));
 }
 
 bool ParseHotkeySpec(const std::string& text, RevarHotkeySpec* out) {
@@ -137,13 +162,152 @@ bool IsDetachHotkey(const weasel::KeyEvent& ke) {
   }
   return false;
 }
+
+bool LoadTransparentModeEnabled() {
+  auto path = RevarInputConfigPath();
+  std::ifstream in(path);
+  bool default_mode_transparent = false;
+  bool transparent_enabled = false;
+  bool in_transparent_mode = false;
+  std::string line;
+  while (std::getline(in, line)) {
+    auto comment = line.find('#');
+    if (comment != std::string::npos)
+      line = line.substr(0, comment);
+    std::string trimmed = Trim(line);
+    if (trimmed.empty())
+      continue;
+
+    if (trimmed.rfind("default_mode:", 0) == 0) {
+      default_mode_transparent = ToLower(ValueAfterColon(trimmed)) == "transparent";
+      continue;
+    }
+    if (trimmed == "transparent_mode:") {
+      in_transparent_mode = true;
+      continue;
+    }
+    if (trimmed.find(':') != std::string::npos && trimmed[0] != '-' &&
+        trimmed != "enabled:" && trimmed.rfind("enabled:", 0) != 0 &&
+        trimmed.find(" ") == std::string::npos) {
+      in_transparent_mode = false;
+    }
+    if (in_transparent_mode && trimmed.rfind("enabled:", 0) == 0) {
+      transparent_enabled = ParseBool(ValueAfterColon(trimmed));
+      continue;
+    }
+  }
+  return default_mode_transparent || transparent_enabled;
+}
+
+bool IsPlainAsciiLetterKey(const weasel::KeyEvent& ke) {
+  constexpr UINT kBlockMask = ibus::CONTROL_MASK | ibus::ALT_MASK |
+                              ibus::META_MASK | ibus::SUPER_MASK |
+                              ibus::HYPER_MASK | ibus::RELEASE_MASK;
+  if (ke.mask & kBlockMask)
+    return false;
+  return (ke.keycode >= 'a' && ke.keycode <= 'z') ||
+         (ke.keycode >= 'A' && ke.keycode <= 'Z');
+}
+
+bool IsAsciiDigitKey(const weasel::KeyEvent& ke) {
+  return ke.keycode >= '0' && ke.keycode <= '9';
+}
+
+bool IsTransparentCandidateKey(const weasel::KeyEvent& ke) {
+  if (ke.mask & ibus::RELEASE_MASK)
+    return false;
+  return ke.keycode == ibus::space || ke.keycode == ibus::Return ||
+         ke.keycode == ibus::BackSpace || IsAsciiDigitKey(ke) ||
+         ke.keycode == ibus::Escape || ke.keycode == ibus::Tab ||
+         ke.keycode == ibus::Left || ke.keycode == ibus::Right ||
+         ke.keycode == ibus::Up || ke.keycode == ibus::Down ||
+         ke.keycode == ibus::Prior || ke.keycode == ibus::Next;
+}
 }  // namespace
 
 void WeaselTSF::_DetachShadowBuffer(com_ptr<ITfContext> pContext) {
   // revar 输入法: 只清 shadow/Rime 候选态，不删除应用中已经输入的 raw text。
   // transparent mode 里 raw text 不在 TSF composition 内；compatible mode 里这相当于 cancel 当前 composition。
   _pEditSessionContext = pContext;
+  _revarShadowBuffer.clear();
+  _fRevarTransparentUIActive = FALSE;
   _AbortComposition(true);
+}
+
+BOOL WeaselTSF::_IsRevarTransparentModeEnabled() {
+  static const BOOL enabled = LoadTransparentModeEnabled() ? TRUE : FALSE;
+  return enabled;
+}
+
+BOOL WeaselTSF::_TryHandleRevarTransparentKey(ITfContext* pContext,
+                                             WPARAM wParam,
+                                             LPARAM lParam,
+                                             BOOL keyDown,
+                                             BOOL* pfEaten) {
+  *pfEaten = FALSE;
+  if (!_IsRevarTransparentModeEnabled())
+    return FALSE;
+
+  weasel::KeyEvent ke;
+  GetKeyboardState(_lpbKeyState);
+  if (!ConvertKeyEvent(static_cast<UINT>(wParam), lParam, _lpbKeyState, ke))
+    return FALSE;
+
+  if (!keyDown) {
+    if (_fRevarTransparentKeyDownPending) {
+      _fRevarTransparentKeyDownPending = FALSE;
+      *pfEaten = FALSE;
+      return TRUE;
+    }
+    return FALSE;
+  }
+
+  if (_fRevarTransparentKeyDownPending) {
+    // Multiple OnTestKeyDown callbacks for the same physical key: do not feed
+    // Rime twice. Let the real OnKeyDown pass through to the host app.
+    *pfEaten = FALSE;
+    return TRUE;
+  }
+
+  if ((_isToOpenClose && !_IsKeyboardOpen()) || _IsKeyboardDisabled())
+    return FALSE;
+  if (!_EnsureServerConnected())
+    return FALSE;
+
+  const bool plain_letter = IsPlainAsciiLetterKey(ke);
+  if (plain_letter) {
+    m_client.ProcessKeyEvent(ke);
+    _revarShadowBuffer.push_back(static_cast<wchar_t>(ke.keycode));
+    _UpdateComposition(pContext);
+    _fRevarTransparentKeyDownPending = TRUE;
+    *pfEaten = FALSE;
+    return TRUE;
+  }
+
+  if (_revarShadowBuffer.empty())
+    return FALSE;
+
+  if (ke.keycode == ibus::BackSpace) {
+    m_client.ProcessKeyEvent(ke);
+    _revarShadowBuffer.pop_back();
+    _UpdateComposition(pContext);
+    _fRevarTransparentKeyDownPending = TRUE;
+    *pfEaten = FALSE;
+    return TRUE;
+  }
+
+  if (IsTransparentCandidateKey(ke)) {
+    BOOL eaten = (BOOL)m_client.ProcessKeyEvent(ke);
+    _UpdateComposition(pContext);
+    *pfEaten = eaten;
+    return eaten;
+  }
+
+  // Symbols and other native-editing boundary keys keep the already typed raw
+  // text, clear the Rime/shadow state, and pass through to the host app.
+  _DetachShadowBuffer(pContext);
+  *pfEaten = FALSE;
+  return TRUE;
 }
 
 BOOL WeaselTSF::_TryHandleRevarDetachKey(ITfContext* pContext,
@@ -169,7 +333,7 @@ BOOL WeaselTSF::_TryHandleRevarDetachKey(ITfContext* pContext,
   }
 
   // 空闲状态不抢 F1，保留宿主应用自己的 Help 等行为。
-  if (!_status.composing && !_IsComposing())
+  if (!_status.composing && !_IsComposing() && _revarShadowBuffer.empty())
     return FALSE;
 
   _DetachShadowBuffer(pContext);
@@ -237,6 +401,8 @@ STDAPI WeaselTSF::OnSetFocus(BOOL fForeground) {
     m_client.FocusIn();
   else {
     m_client.FocusOut();
+    _revarShadowBuffer.clear();
+    _fRevarTransparentUIActive = FALSE;
     _AbortComposition();
   }
 
@@ -267,6 +433,12 @@ STDAPI WeaselTSF::OnTestKeyDown(ITfContext* pContext,
       _fTestKeyDownPending = TRUE;
     return S_OK;
   }
+  if (_TryHandleRevarTransparentKey(pContext, wParam, lParam, TRUE,
+                                    pfEaten)) {
+    if (*pfEaten)
+      _fTestKeyDownPending = TRUE;
+    return S_OK;
+  }
   _ProcessKeyEvent(wParam, lParam, pfEaten);
   _UpdateComposition(pContext);
   if (*pfEaten)
@@ -284,6 +456,9 @@ STDAPI WeaselTSF::OnKeyDown(ITfContext* pContext,
     *pfEaten = TRUE;
   } else {
     if (_TryHandleRevarDetachKey(pContext, wParam, lParam, TRUE, pfEaten))
+      return S_OK;
+    if (_TryHandleRevarTransparentKey(pContext, wParam, lParam, TRUE,
+                                      pfEaten))
       return S_OK;
     _ProcessKeyEvent(wParam, lParam, pfEaten);
     _UpdateComposition(pContext);
@@ -305,6 +480,12 @@ STDAPI WeaselTSF::OnTestKeyUp(ITfContext* pContext,
       _fTestKeyUpPending = TRUE;
     return S_OK;
   }
+  if (_TryHandleRevarTransparentKey(pContext, wParam, lParam, FALSE,
+                                    pfEaten)) {
+    if (*pfEaten)
+      _fTestKeyUpPending = TRUE;
+    return S_OK;
+  }
   _ProcessKeyEvent(wParam, lParam, pfEaten);
   _UpdateComposition(pContext);
   if (*pfEaten)
@@ -322,6 +503,9 @@ STDAPI WeaselTSF::OnKeyUp(ITfContext* pContext,
     *pfEaten = TRUE;
   } else {
     if (_TryHandleRevarDetachKey(pContext, wParam, lParam, FALSE, pfEaten))
+      return S_OK;
+    if (_TryHandleRevarTransparentKey(pContext, wParam, lParam, FALSE,
+                                      pfEaten))
       return S_OK;
     _ProcessKeyEvent(wParam, lParam, pfEaten);
     if (!_async_edit)

@@ -30,6 +30,8 @@ WeaselTSF::WeaselTSF() {
   _fTestKeyDownPending = FALSE;
   _fTestKeyUpPending = FALSE;
   _fRevarDetachKeyPending = FALSE;
+  _fRevarTransparentKeyDownPending = FALSE;
+  _fRevarTransparentUIActive = FALSE;
 
   _fCUASWorkaroundTested = _fCUASWorkaroundEnabled = FALSE;
 

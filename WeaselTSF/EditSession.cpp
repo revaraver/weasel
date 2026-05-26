@@ -16,29 +16,56 @@ STDAPI WeaselTSF::DoEditSession(TfEditCookie ec) {
   _UpdateLanguageBar(_status);
 
   if (ok) {
-    if (!commit.empty()) {
-      // For auto-selecting, commit and preedit can both exist.
-      // Commit and close the original composition first.
-      if (!_IsComposing()) {
+    if (_IsRevarTransparentModeEnabled()) {
+      if (!commit.empty()) {
+        _ReplaceRevarShadowBufferWithText(_pEditSessionContext, commit);
+        _revarShadowBuffer.clear();
+        _committed = TRUE;
+      } else {
+        _committed = FALSE;
+      }
+
+      if (_status.composing) {
+        if (!_fRevarTransparentUIActive) {
+          _StartUI();
+          _fRevarTransparentUIActive = TRUE;
+        }
+      } else {
+        _revarShadowBuffer.clear();
+        if (_fRevarTransparentUIActive) {
+          _EndUI();
+          _fRevarTransparentUIActive = FALSE;
+        }
+        if (_IsComposing()) {
+          _EndComposition(_pEditSessionContext, true);
+        }
+      }
+      _UpdateCompositionWindow(_pEditSessionContext);
+    } else {
+      if (!commit.empty()) {
+        // For auto-selecting, commit and preedit can both exist.
+        // Commit and close the original composition first.
+        if (!_IsComposing()) {
+          _StartComposition(_pEditSessionContext,
+                            _fCUASWorkaroundEnabled && !config.inline_preedit);
+        }
+        _InsertText(_pEditSessionContext, commit);
+        _EndComposition(_pEditSessionContext, false);
+        _committed = TRUE;
+      } else {
+        _committed = FALSE;
+      }
+      if (_status.composing && !_IsComposing()) {
         _StartComposition(_pEditSessionContext,
                           _fCUASWorkaroundEnabled && !config.inline_preedit);
+      } else if (!_status.composing && _IsComposing()) {
+        _EndComposition(_pEditSessionContext, true);
       }
-      _InsertText(_pEditSessionContext, commit);
-      _EndComposition(_pEditSessionContext, false);
-      _committed = TRUE;
-    } else {
-      _committed = FALSE;
+      if (_IsComposing() && config.inline_preedit) {
+        _ShowInlinePreedit(_pEditSessionContext, context);
+      }
+      _UpdateCompositionWindow(_pEditSessionContext);
     }
-    if (_status.composing && !_IsComposing()) {
-      _StartComposition(_pEditSessionContext,
-                        _fCUASWorkaroundEnabled && !config.inline_preedit);
-    } else if (!_status.composing && _IsComposing()) {
-      _EndComposition(_pEditSessionContext, true);
-    }
-    if (_IsComposing() && config.inline_preedit) {
-      _ShowInlinePreedit(_pEditSessionContext, context);
-    }
-    _UpdateCompositionWindow(_pEditSessionContext);
   }
 
   _UpdateUI(*context, _status);
