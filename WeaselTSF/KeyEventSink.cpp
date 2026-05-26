@@ -248,10 +248,16 @@ bool IsForegroundGodotHost() {
   if (!hwnd)
     return false;
 
+  static HWND cached_hwnd = nullptr;
+  static DWORD cached_pid = 0;
+  static bool cached_is_godot = false;
+
   DWORD pid = 0;
   GetWindowThreadProcessId(hwnd, &pid);
   if (!pid)
     return false;
+  if (hwnd == cached_hwnd && pid == cached_pid)
+    return cached_is_godot;
 
   HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
   if (!process)
@@ -264,7 +270,10 @@ bool IsForegroundGodotHost() {
   if (!ok)
     return false;
 
-  return ToLowerWide(path).find(L"godot") != std::wstring::npos;
+  cached_hwnd = hwnd;
+  cached_pid = pid;
+  cached_is_godot = ToLowerWide(path).find(L"godot") != std::wstring::npos;
+  return cached_is_godot;
 }
 
 void SendRevarUnicodeText(const std::wstring& text) {
