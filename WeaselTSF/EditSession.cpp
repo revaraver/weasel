@@ -48,7 +48,9 @@ STDAPI WeaselTSF::DoEditSession(TfEditCookie ec) {
         _committed = FALSE;
       }
 
-      if (_status.composing) {
+      const bool transparent_active =
+          _status.composing || !_revarShadowBuffer.empty();
+      if (transparent_active) {
         if (!_fRevarTransparentUIActive) {
           _StartUI();
           _fRevarTransparentUIActive = TRUE;

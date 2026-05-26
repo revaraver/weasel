@@ -350,6 +350,13 @@ void CCandidateList::_MakeUIWindow() {
 }
 
 void WeaselTSF::_UpdateUI(const Context& ctx, const Status& status) {
+  if (_IsRevarTransparentModeEnabled() && !_revarShadowBuffer.empty() &&
+      !status.composing) {
+    Status transparent_status = status;
+    transparent_status.composing = true;
+    _cand->UpdateUI(ctx, transparent_status);
+    return;
+  }
   _cand->UpdateUI(ctx, status);
 }
 
