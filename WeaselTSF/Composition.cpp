@@ -21,20 +21,11 @@ void WriteRevarDebugLog(const std::wstring& line) {
   out << GetTickCount64() << L" " << line << std::endl;
 }
 
-void SendRevarFallbackReplacement(LONG shadowLength, const std::wstring& text) {
+void SendRevarFallbackCommitOnly(const std::wstring& text) {
+  // 弱 TSF 宿主里用 Backspace*N 回滚 raw text 可能误删用户已有内容。
+  // 所以这里宁可只提交中文、不做破坏性删除；已知弱宿主应直接回退 compatible mode。
   std::vector<INPUT> inputs;
-  inputs.reserve(static_cast<size_t>(shadowLength) * 2 + text.length() * 2);
-
-  for (LONG i = 0; i < shadowLength; ++i) {
-    INPUT down = {};
-    down.type = INPUT_KEYBOARD;
-    down.ki.wVk = VK_BACK;
-    inputs.push_back(down);
-
-    INPUT up = down;
-    up.ki.dwFlags = KEYEVENTF_KEYUP;
-    inputs.push_back(up);
-  }
+  inputs.reserve(text.length() * 2);
 
   for (wchar_t ch : text) {
     INPUT down = {};
@@ -432,7 +423,7 @@ BOOL WeaselTSF::_ReplaceRevarShadowBufferWithTextInEditSession(
         << L" text=" << text;
     WriteRevarDebugLog(dbg.str());
     _revarShadowBuffer.clear();
-    SendRevarFallbackReplacement(shadowLength, text);
+    SendRevarFallbackCommitOnly(text);
     return FALSE;
   }
 
@@ -448,7 +439,7 @@ BOOL WeaselTSF::_ReplaceRevarShadowBufferWithTextInEditSession(
     WriteRevarDebugLog(dbg.str());
     if (FAILED(hr) || std::labs(shifted) < shadowLength) {
       _revarShadowBuffer.clear();
-      SendRevarFallbackReplacement(shadowLength, text);
+      SendRevarFallbackCommitOnly(text);
       return FALSE;
     }
   }
@@ -461,7 +452,7 @@ BOOL WeaselTSF::_ReplaceRevarShadowBufferWithTextInEditSession(
         << L" hr=0x" << std::hex << hr << L" text=" << text;
     WriteRevarDebugLog(dbg.str());
     _revarShadowBuffer.clear();
-    SendRevarFallbackReplacement(shadowLength, text);
+    SendRevarFallbackCommitOnly(text);
     return FALSE;
   }
 
