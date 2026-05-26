@@ -667,6 +667,19 @@ STDAPI WeaselTSF::OnCompositionTerminated(TfEditCookie ecWrite,
   // This will be called when an edit session ended up with an empty composition
   // string, Even if it is closed normally. Silly M$.
 
+  if (_IsRevarTransparentModeEnabled() && !_revarShadowBuffer.empty()) {
+    // revar transparent mode 的真实输入状态由 shadow_buffer 驱动，不由宿主
+    // TSF composition 生命周期驱动。Godot 这类宿主会在 raw 字符进正文后主动
+    // 结束 TSF composition；如果这里跟着 Abort/Destroy UI，就会出现“打一键候选框
+    // 闪一下消失，Backspace 后又恢复”的状态错位。
+    _FinalizeComposition();
+    if (!_fRevarTransparentUIActive) {
+      _StartUI();
+      _fRevarTransparentUIActive = TRUE;
+    }
+    return S_OK;
+  }
+
   _AbortComposition();
   return S_OK;
 }

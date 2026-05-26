@@ -373,6 +373,15 @@ void WeaselTSF::_ShowUI() {
 }
 
 void WeaselTSF::_HideUI() {
+  if (_IsRevarTransparentModeEnabled() && !_revarShadowBuffer.empty()) {
+    // 如果候选窗因为焦点/鼠标等外部事件被隐藏，transparent 状态机也要
+    // 同步断开 shadow；raw text 已经在宿主里，不能再保留悬空候选态。
+    _revarShadowBuffer.clear();
+    _revarTransparentPendingKeyUps.clear();
+    _fRevarTransparentKeyDownPending = FALSE;
+    _fRevarTransparentUIActive = FALSE;
+    m_client.ClearComposition();
+  }
   _cand->Show(FALSE);
 }
 
