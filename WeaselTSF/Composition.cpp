@@ -494,9 +494,17 @@ BOOL WeaselTSF::_InsertRevarRawText(com_ptr<ITfContext> pContext,
   pEditSession.Attach(new CReplaceRevarShadowEditSession(this, pContext, 0,
                                                          text));
   if (pEditSession != NULL) {
-    HRESULT hr;
+    HRESULT hr = E_FAIL;
     pContext->RequestEditSession(_tfClientId, pEditSession,
-                                 TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &hr);
+                                 TF_ES_SYNC | TF_ES_READWRITE, &hr);
+    if (hr != S_OK) {
+      std::wstringstream dbg;
+      dbg << L"raw insert sync failed hr=0x" << std::hex << hr
+          << L" text=" << text;
+      WriteRevarDebugLog(dbg.str());
+      pContext->RequestEditSession(_tfClientId, pEditSession,
+                                   TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &hr);
+    }
     return SUCCEEDED(hr);
   }
   return FALSE;
