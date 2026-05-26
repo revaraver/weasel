@@ -382,6 +382,20 @@ BOOL WeaselTSF::_ReplaceRevarShadowBufferWithText(com_ptr<ITfContext> pContext,
   return FALSE;
 }
 
+BOOL WeaselTSF::_InsertRevarRawText(com_ptr<ITfContext> pContext,
+                                    const std::wstring& text) {
+  com_ptr<CReplaceRevarShadowEditSession> pEditSession;
+  pEditSession.Attach(new CReplaceRevarShadowEditSession(this, pContext, 0,
+                                                         text));
+  if (pEditSession != NULL) {
+    HRESULT hr;
+    pContext->RequestEditSession(_tfClientId, pEditSession,
+                                 TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &hr);
+    return SUCCEEDED(hr);
+  }
+  return FALSE;
+}
+
 /* Update Composition */
 class CInsertTextEditSession : public CEditSession {
  public:

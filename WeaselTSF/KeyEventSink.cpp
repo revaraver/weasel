@@ -277,10 +277,12 @@ BOOL WeaselTSF::_TryHandleRevarTransparentKey(ITfContext* pContext,
   const bool plain_letter = IsPlainAsciiLetterKey(ke);
   if (plain_letter) {
     m_client.ProcessKeyEvent(ke);
+    std::wstring raw(1, static_cast<wchar_t>(ke.keycode));
+    _InsertRevarRawText(pContext, raw);
     _revarShadowBuffer.push_back(static_cast<wchar_t>(ke.keycode));
     _UpdateComposition(pContext);
     _fRevarTransparentKeyDownPending = TRUE;
-    *pfEaten = FALSE;
+    *pfEaten = TRUE;
     return TRUE;
   }
 
