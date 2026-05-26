@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
-#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -235,38 +234,6 @@ bool IsTransparentCandidateKey(const weasel::KeyEvent& ke) {
          ke.keycode == ibus::Up || ke.keycode == ibus::Down ||
          ke.keycode == ibus::Prior || ke.keycode == ibus::Next;
 }
-
-std::wstring ToLowerWide(std::wstring s) {
-  std::transform(s.begin(), s.end(), s.begin(), [](wchar_t ch) {
-    return static_cast<wchar_t>(std::towlower(ch));
-  });
-  return s;
-}
-
-bool IsForegroundWeakTransparentHost() {
-  HWND hwnd = GetForegroundWindow();
-  if (!hwnd)
-    return false;
-
-  DWORD pid = 0;
-  GetWindowThreadProcessId(hwnd, &pid);
-  if (!pid)
-    return false;
-
-  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-  if (!process)
-    return false;
-
-  WCHAR path[MAX_PATH] = {0};
-  DWORD size = ARRAYSIZE(path);
-  BOOL ok = QueryFullProcessImageNameW(process, 0, path, &size);
-  CloseHandle(process);
-  if (!ok)
-    return false;
-
-  std::wstring lower = ToLowerWide(path);
-  return lower.find(L"godot") != std::wstring::npos;
-}
 }  // namespace
 
 void WeaselTSF::_DetachShadowBuffer(com_ptr<ITfContext> pContext) {
@@ -292,8 +259,6 @@ BOOL WeaselTSF::_TryHandleRevarTransparentKey(ITfContext* pContext,
                                              BOOL* pfEaten) {
   *pfEaten = FALSE;
   if (!_IsRevarTransparentModeEnabled())
-    return FALSE;
-  if (IsForegroundWeakTransparentHost())
     return FALSE;
 
   weasel::KeyEvent ke;
