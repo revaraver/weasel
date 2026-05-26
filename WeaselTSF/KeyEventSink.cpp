@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -234,6 +235,55 @@ bool IsTransparentCandidateKey(const weasel::KeyEvent& ke) {
          ke.keycode == ibus::Up || ke.keycode == ibus::Down ||
          ke.keycode == ibus::Prior || ke.keycode == ibus::Next;
 }
+
+std::wstring ToLowerWide(std::wstring s) {
+  std::transform(s.begin(), s.end(), s.begin(), [](wchar_t ch) {
+    return static_cast<wchar_t>(std::towlower(ch));
+  });
+  return s;
+}
+
+bool IsForegroundGodotHost() {
+  HWND hwnd = GetForegroundWindow();
+  if (!hwnd)
+    return false;
+
+  DWORD pid = 0;
+  GetWindowThreadProcessId(hwnd, &pid);
+  if (!pid)
+    return false;
+
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (!process)
+    return false;
+
+  WCHAR path[MAX_PATH] = {0};
+  DWORD size = ARRAYSIZE(path);
+  BOOL ok = QueryFullProcessImageNameW(process, 0, path, &size);
+  CloseHandle(process);
+  if (!ok)
+    return false;
+
+  return ToLowerWide(path).find(L"godot") != std::wstring::npos;
+}
+
+void SendRevarUnicodeText(const std::wstring& text) {
+  std::vector<INPUT> inputs;
+  inputs.reserve(text.length() * 2);
+  for (wchar_t ch : text) {
+    INPUT down = {};
+    down.type = INPUT_KEYBOARD;
+    down.ki.wScan = ch;
+    down.ki.dwFlags = KEYEVENTF_UNICODE;
+    inputs.push_back(down);
+
+    INPUT up = down;
+    up.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+    inputs.push_back(up);
+  }
+  if (!inputs.empty())
+    SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+}
 }  // namespace
 
 void WeaselTSF::_DetachShadowBuffer(com_ptr<ITfContext> pContext) {
@@ -270,11 +320,6 @@ BOOL WeaselTSF::_TryHandleRevarTransparentKey(ITfContext* pContext,
     auto pending = std::find(_revarTransparentPendingKeyUps.begin(),
                              _revarTransparentPendingKeyUps.end(), ke.keycode);
     if (pending != _revarTransparentPendingKeyUps.end()) {
-      std::wstringstream dbg;
-      dbg << L"key transparent up swallowed keycode=" << ke.keycode
-          << L" mask=" << ke.mask << L" shadow=" << _revarShadowBuffer
-          << L" pending_before=" << _revarTransparentPendingKeyUps.size();
-      WriteRevarDebugLog(dbg.str());
       _revarTransparentPendingKeyUps.erase(pending);
       _fRevarTransparentKeyDownPending =
           _revarTransparentPendingKeyUps.empty() ? FALSE : TRUE;
@@ -291,14 +336,13 @@ BOOL WeaselTSF::_TryHandleRevarTransparentKey(ITfContext* pContext,
 
   const bool plain_letter = IsPlainAsciiLetterKey(ke);
   if (plain_letter) {
-    std::wstringstream dbg;
-    dbg << L"key transparent down keycode=" << ke.keycode << L" char="
-        << static_cast<wchar_t>(ke.keycode) << L" mask=" << ke.mask
-        << L" shadow_before=" << _revarShadowBuffer;
-    WriteRevarDebugLog(dbg.str());
     m_client.ProcessKeyEvent(ke);
     std::wstring raw(1, static_cast<wchar_t>(ke.keycode));
-    _InsertRevarRawText(pContext, raw);
+    if (IsForegroundGodotHost()) {
+      SendRevarUnicodeText(raw);
+    } else {
+      _InsertRevarRawText(pContext, raw);
+    }
     _revarShadowBuffer.push_back(static_cast<wchar_t>(ke.keycode));
     _revarTransparentPendingKeyUps.push_back(ke.keycode);
     _UpdateComposition(pContext);

@@ -4,7 +4,9 @@
 #include "ResponseParser.h"
 #include "CandidateList.h"
 
+#include <algorithm>
 #include <cstdlib>
+#include <cwctype>
 #include <fstream>
 #include <sstream>
 #include <vector>
@@ -21,9 +23,7 @@ void WriteRevarDebugLog(const std::wstring& line) {
   out << GetTickCount64() << L" " << line << std::endl;
 }
 
-void SendRevarFallbackCommitOnly(const std::wstring& text) {
-  // 弱 TSF 宿主里用 Backspace*N 回滚 raw text 可能误删用户已有内容。
-  // 所以这里宁可只提交中文、不做破坏性删除；已知弱宿主应直接回退 compatible mode。
+void SendRevarUnicodeText(const std::wstring& text) {
   std::vector<INPUT> inputs;
   inputs.reserve(text.length() * 2);
 
@@ -42,6 +42,75 @@ void SendRevarFallbackCommitOnly(const std::wstring& text) {
   if (!inputs.empty()) {
     SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
   }
+}
+
+void SendRevarFallbackReplacement(LONG shadowLength, const std::wstring& text) {
+  std::vector<INPUT> inputs;
+  inputs.reserve(static_cast<size_t>(shadowLength) * 2 + text.length() * 2);
+
+  for (LONG i = 0; i < shadowLength; ++i) {
+    INPUT down = {};
+    down.type = INPUT_KEYBOARD;
+    down.ki.wVk = VK_BACK;
+    inputs.push_back(down);
+
+    INPUT up = down;
+    up.ki.dwFlags = KEYEVENTF_KEYUP;
+    inputs.push_back(up);
+  }
+
+  for (wchar_t ch : text) {
+    INPUT down = {};
+    down.type = INPUT_KEYBOARD;
+    down.ki.wScan = ch;
+    down.ki.dwFlags = KEYEVENTF_UNICODE;
+    inputs.push_back(down);
+
+    INPUT up = down;
+    up.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+    inputs.push_back(up);
+  }
+
+  if (!inputs.empty()) {
+    SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+  }
+}
+
+void SendRevarFallbackCommitOnly(const std::wstring& text) {
+  // 弱 TSF 宿主里用 Backspace*N 回滚 raw text 可能误删用户已有内容。
+  // 只在非专用宿主里使用非破坏性兜底。
+  SendRevarUnicodeText(text);
+}
+
+std::wstring ToLowerWide(std::wstring s) {
+  std::transform(s.begin(), s.end(), s.begin(), [](wchar_t ch) {
+    return static_cast<wchar_t>(std::towlower(ch));
+  });
+  return s;
+}
+
+bool IsForegroundGodotHost() {
+  HWND hwnd = GetForegroundWindow();
+  if (!hwnd)
+    return false;
+
+  DWORD pid = 0;
+  GetWindowThreadProcessId(hwnd, &pid);
+  if (!pid)
+    return false;
+
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (!process)
+    return false;
+
+  WCHAR path[MAX_PATH] = {0};
+  DWORD size = ARRAYSIZE(path);
+  BOOL ok = QueryFullProcessImageNameW(process, 0, path, &size);
+  CloseHandle(process);
+  if (!ok)
+    return false;
+
+  return ToLowerWide(path).find(L"godot") != std::wstring::npos;
 }
 }  // namespace
 
@@ -413,6 +482,16 @@ BOOL WeaselTSF::_ReplaceRevarShadowBufferWithTextInEditSession(
     TfEditCookie ec,
     const std::wstring& text) {
   LONG shadowLength = static_cast<LONG>(_revarShadowBuffer.length());
+  if (IsForegroundGodotHost()) {
+    std::wstringstream dbg;
+    dbg << L"godot sendinput replace shadow_len=" << shadowLength
+        << L" text=" << text;
+    WriteRevarDebugLog(dbg.str());
+    _revarShadowBuffer.clear();
+    SendRevarFallbackReplacement(shadowLength, text);
+    return TRUE;
+  }
+
   TF_SELECTION tfSelection;
   ULONG fetched = 0;
   if (FAILED(pContext->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &tfSelection,
