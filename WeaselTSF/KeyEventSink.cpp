@@ -241,6 +241,8 @@ void WeaselTSF::_DetachShadowBuffer(com_ptr<ITfContext> pContext) {
   // transparent mode 里 raw text 不在 TSF composition 内；compatible mode 里这相当于 cancel 当前 composition。
   _pEditSessionContext = pContext;
   _revarShadowBuffer.clear();
+  _revarTransparentPendingKeyUps.clear();
+  _fRevarTransparentKeyDownPending = FALSE;
   _fRevarTransparentUIActive = FALSE;
   _AbortComposition(true);
 }
@@ -265,23 +267,21 @@ BOOL WeaselTSF::_TryHandleRevarTransparentKey(ITfContext* pContext,
     return FALSE;
 
   if (!keyDown) {
-    if (_fRevarTransparentKeyDownPending) {
+    auto pending = std::find(_revarTransparentPendingKeyUps.begin(),
+                             _revarTransparentPendingKeyUps.end(), ke.keycode);
+    if (pending != _revarTransparentPendingKeyUps.end()) {
       std::wstringstream dbg;
       dbg << L"key transparent up swallowed keycode=" << ke.keycode
-          << L" mask=" << ke.mask << L" shadow=" << _revarShadowBuffer;
+          << L" mask=" << ke.mask << L" shadow=" << _revarShadowBuffer
+          << L" pending_before=" << _revarTransparentPendingKeyUps.size();
       WriteRevarDebugLog(dbg.str());
-      _fRevarTransparentKeyDownPending = FALSE;
+      _revarTransparentPendingKeyUps.erase(pending);
+      _fRevarTransparentKeyDownPending =
+          _revarTransparentPendingKeyUps.empty() ? FALSE : TRUE;
       *pfEaten = TRUE;
       return TRUE;
     }
     return FALSE;
-  }
-
-  if (_fRevarTransparentKeyDownPending) {
-    // Multiple OnTestKeyDown callbacks for the same physical key: do not feed
-    // Rime twice. Let the real OnKeyDown pass through to the host app.
-    *pfEaten = FALSE;
-    return TRUE;
   }
 
   if ((_isToOpenClose && !_IsKeyboardOpen()) || _IsKeyboardDisabled())
@@ -300,6 +300,7 @@ BOOL WeaselTSF::_TryHandleRevarTransparentKey(ITfContext* pContext,
     std::wstring raw(1, static_cast<wchar_t>(ke.keycode));
     _InsertRevarRawText(pContext, raw);
     _revarShadowBuffer.push_back(static_cast<wchar_t>(ke.keycode));
+    _revarTransparentPendingKeyUps.push_back(ke.keycode);
     _UpdateComposition(pContext);
     _fRevarTransparentKeyDownPending = TRUE;
     *pfEaten = TRUE;
@@ -424,6 +425,8 @@ STDAPI WeaselTSF::OnSetFocus(BOOL fForeground) {
   else {
     m_client.FocusOut();
     _revarShadowBuffer.clear();
+    _revarTransparentPendingKeyUps.clear();
+    _fRevarTransparentKeyDownPending = FALSE;
     _fRevarTransparentUIActive = FALSE;
     _AbortComposition();
   }

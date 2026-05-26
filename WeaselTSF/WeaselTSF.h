@@ -3,6 +3,7 @@
 #include "Globals.h"
 #include <WeaselIPC.h>
 #include <WeaselIPCData.h>
+#include <vector>
 
 class CCandidateList;
 class CLangBarItemButton;
@@ -221,6 +222,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BOOL _fTestKeyDownPending, _fTestKeyUpPending;
   BOOL _fRevarDetachKeyPending;
   BOOL _fRevarTransparentKeyDownPending;
+  std::vector<UINT> _revarTransparentPendingKeyUps;
   BOOL _fRevarTransparentUIActive;
   std::wstring _revarShadowBuffer;
 
