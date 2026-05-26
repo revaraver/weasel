@@ -170,6 +170,12 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BOOL _InitKeyEventSink();
   void _UninitKeyEventSink();
   void _ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten);
+  BOOL _TryHandleRevarDetachKey(ITfContext* pContext,
+                                WPARAM wParam,
+                                LPARAM lParam,
+                                BOOL keyDown,
+                                BOOL* pfEaten);
+  void _DetachShadowBuffer(com_ptr<ITfContext> pContext);
 
   BOOL _InitPreservedKey();
   void _UninitPreservedKey();
@@ -203,6 +209,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   DWORD _dwTextEditSinkCookie, _dwTextLayoutSinkCookie;
   BYTE _lpbKeyState[256];
   BOOL _fTestKeyDownPending, _fTestKeyUpPending;
+  BOOL _fRevarDetachKeyPending;
 
   com_ptr<ITfContext> _pEditSessionContext;
   std::wstring _editSessionText;
