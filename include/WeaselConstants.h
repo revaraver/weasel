@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#define WEASEL_CODE_NAME "Weasel"
+#define WEASEL_CODE_NAME "ReVar Input"
 #define WEASEL_REG_KEY L"Software\\Rime\\Weasel"
 #define RIME_REG_KEY L"Software\\Rime"
 

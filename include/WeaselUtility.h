@@ -187,17 +187,7 @@ inline std::basic_string<CharT> unescape_string(
 std::string GetCustomResource(const char* name, const char* type);
 
 inline std::wstring get_weasel_ime_name() {
-  LANGID langId = GetUserDefaultUILanguage();
-
-  if (langId == MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL) ||
-      langId == MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED) ||
-      langId == MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_HONGKONG) ||
-      langId == MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SINGAPORE) ||
-      langId == MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_MACAU)) {
-    return L"小狼毫";
-  } else {
-    return L"Weasel";
-  }
+  return L"revar 输入法";
 }
 
 inline LONG RegGetStringValue(HKEY key,
