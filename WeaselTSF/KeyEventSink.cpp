@@ -385,9 +385,10 @@ BOOL WeaselTSF::_TryHandleRevarTransparentKey(ITfContext* pContext,
     m_client.ProcessKeyEvent(ke);
     std::wstring raw(1, static_cast<wchar_t>(ke.keycode));
     if (IsForegroundGodotHost()) {
-      if (!SendRevarGodotDirectText(0, raw)) {
-        SendRevarUnicodeText(raw);
-      }
+      // Keep raw letters on Godot's normal keyboard input path so CodeEdit can
+      // update syntax services and show completion while the token is typed.
+      // The direct Godot protocol is only for candidate commits/replacements.
+      SendRevarUnicodeText(raw);
     } else {
       _InsertRevarRawText(pContext, raw);
     }
