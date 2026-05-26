@@ -23,6 +23,17 @@ struct RevarHotkeySpec {
   UINT mask = 0;
 };
 
+void WriteRevarDebugLog(const std::wstring& line) {
+  WCHAR temp[MAX_PATH] = {0};
+  if (!GetTempPathW(ARRAYSIZE(temp), temp))
+    return;
+  std::wstring path = std::wstring(temp) + L"revar_input_tsf_debug.log";
+  std::wofstream out(path, std::ios::app);
+  if (!out)
+    return;
+  out << GetTickCount64() << L" " << line << std::endl;
+}
+
 std::string Trim(std::string s) {
   auto not_space = [](unsigned char c) { return !std::isspace(c); };
   s.erase(s.begin(), std::find_if(s.begin(), s.end(), not_space));
@@ -255,8 +266,12 @@ BOOL WeaselTSF::_TryHandleRevarTransparentKey(ITfContext* pContext,
 
   if (!keyDown) {
     if (_fRevarTransparentKeyDownPending) {
+      std::wstringstream dbg;
+      dbg << L"key transparent up swallowed keycode=" << ke.keycode
+          << L" mask=" << ke.mask << L" shadow=" << _revarShadowBuffer;
+      WriteRevarDebugLog(dbg.str());
       _fRevarTransparentKeyDownPending = FALSE;
-      *pfEaten = FALSE;
+      *pfEaten = TRUE;
       return TRUE;
     }
     return FALSE;
@@ -276,6 +291,11 @@ BOOL WeaselTSF::_TryHandleRevarTransparentKey(ITfContext* pContext,
 
   const bool plain_letter = IsPlainAsciiLetterKey(ke);
   if (plain_letter) {
+    std::wstringstream dbg;
+    dbg << L"key transparent down keycode=" << ke.keycode << L" char="
+        << static_cast<wchar_t>(ke.keycode) << L" mask=" << ke.mask
+        << L" shadow_before=" << _revarShadowBuffer;
+    WriteRevarDebugLog(dbg.str());
     m_client.ProcessKeyEvent(ke);
     std::wstring raw(1, static_cast<wchar_t>(ke.keycode));
     _InsertRevarRawText(pContext, raw);

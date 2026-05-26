@@ -3,6 +3,23 @@
 #include "CandidateList.h"
 #include "ResponseParser.h"
 
+#include <algorithm>
+#include <fstream>
+#include <sstream>
+
+namespace {
+void WriteRevarDebugLog(const std::wstring& line) {
+  WCHAR temp[MAX_PATH] = {0};
+  if (!GetTempPathW(ARRAYSIZE(temp), temp))
+    return;
+  std::wstring path = std::wstring(temp) + L"revar_input_tsf_debug.log";
+  std::wofstream out(path, std::ios::app);
+  if (!out)
+    return;
+  out << GetTickCount64() << L" " << line << std::endl;
+}
+}  // namespace
+
 STDAPI WeaselTSF::DoEditSession(TfEditCookie ec) {
   // get commit string from server
   std::wstring commit;
@@ -17,6 +34,18 @@ STDAPI WeaselTSF::DoEditSession(TfEditCookie ec) {
 
   if (ok) {
     if (_IsRevarTransparentModeEnabled()) {
+      std::wstringstream dbg;
+      dbg << L"response transparent schema=" << _status.schema_id
+          << L" composing=" << _status.composing << L" shadow="
+          << _revarShadowBuffer << L" preedit=" << context->preedit.str
+          << L" commit=" << commit << L" cand_count="
+          << context->cinfo.candies.size();
+      size_t n = std::min<size_t>(context->cinfo.candies.size(), 5);
+      for (size_t i = 0; i < n; ++i) {
+        dbg << L" cand" << i << L"=" << context->cinfo.candies[i].str;
+      }
+      WriteRevarDebugLog(dbg.str());
+
       if (!commit.empty()) {
         _ReplaceRevarShadowBufferWithText(_pEditSessionContext, commit);
         _revarShadowBuffer.clear();
