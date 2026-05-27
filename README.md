@@ -1,117 +1,173 @@
-﻿【小狼毫】輸入法
-================
+# ReVar 输入法
 
-基於 中州韻輸入法引擎／Rime Input Method Engine 等開源技術
+基于：https://github.com/rime/weasel
 
-式恕堂 版權所無
+ReVar 输入法是基于 Rime / 小狼毫（Weasel）的 Windows 输入法分支，目标是更适合中文编程、中文变量名和中英文混合输入场景。
 
-[![Download](https://img.shields.io/github/v/release/rime/weasel)](https://github.com/rime/weasel/releases/latest)
-[![Build status](https://github.com/rime/weasel/actions/workflows/commit-ci.yml/badge.svg)](https://github.com/rime/weasel/actions/workflows/commit-ci.yml)
-[![GitHub Tag](https://img.shields.io/github/tag/rime/weasel.svg)](https://github.com/rime/weasel)
+本分支保留 Rime 的方案、词库、用户配置体系，同时增加 ReVar 自己的宿主策略、代码模式、候选窗位置控制和调试开关。
 
-授權條款：GPLv3
+## 使用说明
 
-項目主頁：https://rime.im
+### 1. 安装
 
-您可能還需要 RIME 用於其他操作系統的發行版：
+适用系统：Windows 8.1 ~ Windows 11。
 
-  * ibus-rime、fcitx5-rime 或 fcitx-rime 用於 Linux
-  * 【鼠鬚管】用於 macOS （64位）
+使用安装包安装：
 
-安裝輸入法
-----------
+```text
+revar-input-0.17.4.7-installer.exe
+```
 
-本品適用於 Windows 8.1 ~ Windows 11
+安装后会注册独立的 ReVar 输入法，不复用小狼毫原 CLSID，也不覆盖用户的个人 Rime 配置。
 
-初次安裝時，安裝程序將顯示「安裝選項」對話框。
+用户配置目录仍然是：
 
-若要將【小狼毫】註冊到繁體中文（臺灣）鍵盤佈局，請在「輸入語言」欄選擇「中文（臺灣）」，再點擊「安裝」按鈕。
+```text
+%APPDATA%\Rime
+```
 
-安裝完成後，仍可由開始菜單打開「安裝選項」更改輸入語言。
+ReVar 专属配置文件：
 
-使用輸入法
-----------
+```text
+%APPDATA%\Rime\revar_input.yaml
+```
 
-選取輸入法指示器菜單裏的【中】字樣圖標，開始用小狼毫寫字。
+### 2. 基本输入
 
-可通過快捷鍵 <kbd>Ctrl+`</kbd> 或 <kbd>F4</kbd> 呼出方案選單、切換輸入方式。
+安装后在 Windows 输入法列表中选择：
 
-定製輸入法
-----------
+```text
+ReVar 输入法
+```
 
-通過 開始菜單 » 小狼毫輸入法 訪問設定工具及常用位置。
+Rime 方案、词库和常规部署方式仍沿用 Rime / 小狼毫习惯。修改 Rime 配置或词库后，需要重新部署。
 
-用戶詞庫、配置文件位於 `%AppData%\Rime`，可通過菜單中的「用戶文件夾」打開。高水平玩家調教 Rime 輸入法常會用到。
+### 3. Ctrl+F10：ReVar 菜单
 
-修改詞庫、配置文件後，須「重新部署」方可生效。
+在任意宿主软件中按：
 
-定製 Rime 的方法，請參考 Wiki [《定製指南》](https://github.com/rime/home/wiki/CustomizationGuide)。如需定製 Weasel 獨有的樣式和行為，請參考本倉庫 [Wiki 頁面](https://github.com/rime/weasel/wiki)。
+```text
+Ctrl+F10
+```
 
-致謝
-----
+可以打开 ReVar 菜单。菜单会识别当前前台 EXE 的完整路径，并把策略写入：
 
-### 輸入方案設計：
+```text
+%APPDATA%\Rime\revar_input.yaml
+```
 
-  * 【朙月拼音】系列及【八股文】詞典
-    - 部分數據來源於 CC-CEDICT、Android 拼音、新酷音、opencc 等開源項目
-    - 維護者：佛振、瑾昀
-  * 【注音／地球拼音】
-    - 維護者：佛振、瑾昀
-  * 【倉頡五代】
-    - 發明人：朱邦復先生
-    - 碼表源自 www.chinesecj.com
-    - 構詞碼表作者：惜緣
+主要功能：
 
-  【五笔】【粵拼】【上海／蘇州吳語】【中古漢語拼音】【國際音標】等衆多方案
-  不再以安裝包預裝形式提供。可由 <https://github.com/rime/plum> 下載安裝。
+- 当前 EXE 模式 / 替换策略
+- 代码模式候选窗位置
+- 当前 EXE 的候选窗 x/y/gap 数值调整
+- 调试日志开关
+- 清空调试日志
+- 打开日志目录
+- 清除当前 EXE 的 ReVar 记忆
 
-### 程序設計：
+### 4. 模式说明
 
-  * [佛振](https://github.com/lotem)
-  * [鄒旭](https://github.com/zouxu09)
-  * [Xiangyan Sun](https://github.com/wishstudio)
-  * [Prcuvu](https://github.com/Prcuvu)
-  * [nameoverflow](https://github.com/nameoverflow)
-  * [fxliang](https://github.com/fxliang)
-  * [Azuk 443](https://github.com/determ1ne)
+默认模式是兼容模式：
 
-  查看更多 [代碼貢獻者](https://github.com/rime/weasel/graphs/contributors)
+```yaml
+revar_input:
+  default_mode: compatible
+```
 
-### 美術：
+也就是默认尽量保持小狼毫式行为。
 
-  * 圖標設計／[Patricivs](https://github.com/Patricivs)
-  * 配色方案／Aben、P1461、Patricivs、skoj、佛振、五磅兔
+需要 ReVar 代码模式的宿主，建议用 Ctrl+F10 对当前 EXE 单独开启，而不是全局开启。
 
-### 本品引用了以下開源軟件：
+配置中主要看这些段落：
 
-  * [Boost C++ Libraries](http://www.boost.org/) (Boost Software License)
-  * [curl](https://curl.haxx.se/) (MIT/X derivate license)
-  * [google-glog](https://github.com/google/glog) (BSD 3-Clause License)
-  * [Google Test](https://github.com/google/googletest) (BSD 3-Clause License)
-  * [LevelDB](https://github.com/google/leveldb) (BSD 3-Clause License)
-  * [librime](https://github.com/rime/librime) (BSD 3-Clause License)
-  * [marisa-trie](https://github.com/s-yata/marisa-trie) (BSD 2-Clause License, LGPL 2.1)
-  * [OpenCC / 開放中文轉換](https://github.com/BYVoid/OpenCC) (Apache License 2.0)
-  * [plum](https://github.com/rime/plum) (GNU Lesser General Public License v3.0)
-  * [WinSparkle](https://github.com/vslavik/winsparkle) (MIT License)
-  * [yaml-cpp](https://github.com/jbeder/yaml-cpp) (MIT License)
-  * [7-Zip](https://www.7-zip.org) (GNU LGPLv2.1+ with unRAR restriction)
+```yaml
+revar_input:
+  code_mode:
+    enabled_exact_paths:
+      - "c:\\path\\to\\app.exe"
+    disabled_exact_paths: []
 
-問題與反饋
-----------
+  host_policies:
+    tsf_replace_exact_paths: []
+    raw_unicode_exact_paths: []
+    direct_replace_exact_paths: []
+    backspace_unicode_exact_paths: []
+```
 
-發現程序有 bug，請到 GitHub 反饋
-<https://github.com/rime/weasel/issues>
+路径匹配使用 normalized full path exact match，不用 contains 模糊匹配。
 
-歡迎提交 pull request
-<https://github.com/rime/weasel/pulls>
+### 5. Godot / RVIR direct replace
 
-Rime 輸入法（不限於 Windows 平臺）功能、使用方法與配置相關的問題，請反饋到
-<https://github.com/rime/home/issues>
+对于已打补丁支持 RVIR 协议的 Godot，可把对应 EXE 加入：
 
-聯繫方式
---------
+```yaml
+code_mode:
+  enabled_exact_paths:
+    - "d:\\git\\godot\\bin\\godot.windows.editor.x86_64.exe"
 
-技術交流，歡迎光臨 [Rime 代碼之家](https://github.com/rime/home)，或致信 Rime 開發者 <rimeime@gmail.com>
+host_policies:
+  direct_replace_exact_paths:
+    - "d:\\git\\godot\\bin\\godot.windows.editor.x86_64.exe"
+```
 
-謝謝！
+这一路线使用：
+
+```text
+raw: SendInput Unicode
+候选/UI: async TSF edit session
+commit: RVIR direct replace + expected_raw guarded replace
+```
+
+目标是降低输入阻尼，同时避免误删前文、吞字、乱序。
+
+### 6. 调试日志
+
+调试日志默认关闭：
+
+```yaml
+revar_input:
+  debug:
+    trace_enabled: false
+```
+
+关闭时不会写文件，也不会在热路径上做日志文件 IO。
+
+需要诊断时可以通过 Ctrl+F10 菜单打开。日志位置：
+
+```text
+%TEMP%\revar_input_dev_trace.log
+```
+
+如果不需要调试，保持关闭即可。
+
+### 7. 快捷键约定
+
+```text
+F1          detach_shadow_buffer
+F2          预留 host mode 快切
+Ctrl+F10    ReVar 菜单
+Ctrl+F11    保留给 Rime switcher
+```
+
+### 8. 卸载说明
+
+卸载程序只卸载 ReVar 程序和注册项，不应删除用户的个人 Rime 配置目录。
+
+个人配置目录：
+
+```text
+%APPDATA%\Rime
+```
+
+如需彻底清理个人方案、词库、补丁，请手动备份后再处理。
+
+## 上游与许可
+
+上游项目：
+
+- Rime：https://rime.im
+- Weasel：https://github.com/rime/weasel
+- librime：https://github.com/rime/librime
+
+本分支基于 Weasel / Rime 生态开发，遵循原项目许可。详见仓库中的 LICENSE / COPYING 文件。

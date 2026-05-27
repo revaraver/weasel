@@ -48,6 +48,9 @@ class CCandidateList : public ITfIntegratableCandidateListUIElement,
 
   /* Update */
   void UpdateUI(const weasel::Context& ctx, const weasel::Status& status);
+  void UpdateUIAtPosition(const weasel::Context& ctx,
+                          const weasel::Status& status,
+                          RECT const& rc);
   void UpdateStyle(const weasel::UIStyle& sty);
   void UpdateInputPosition(RECT const& rc);
   void Destroy();

@@ -25,11 +25,11 @@ static const GUID c_guidProfile = {
 // if in the future, option hant is extended, maybe a function to generate this
 // info is required
 #define PSZTITLE_HANS                                                     \
-  L"0804:{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}{3D02CAB6-2B8E-4781-BA20-" \
-  L"1C9267529467}"
+  L"0804:{70601B1D-9D95-4027-8CD8-62540CB96724}{B83ADD1F-48FF-47B7-9CB9-" \
+  L"4D70DB41FBE2}"
 #define PSZTITLE_HANT                                                     \
-  L"0404:{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}{3D02CAB6-2B8E-4781-BA20-" \
-  L"1C9267529467}"
+  L"0404:{70601B1D-9D95-4027-8CD8-62540CB96724}{B83ADD1F-48FF-47B7-9CB9-" \
+  L"4D70DB41FBE2}"
 #define ILOT_UNINSTALL 0x00000001
 typedef HRESULT(WINAPI* PTF_INSTALLLAYOUTORTIP)(LPCWSTR psz, DWORD dwFlags);
 
@@ -126,6 +126,11 @@ int install_ime_file(std::wstring& srcPath,
   WCHAR path[MAX_PATH];
   GetModuleFileNameW(GetModuleHandle(NULL), path, _countof(path));
 
+  // ReVar Input must not share the global System32\weasel.dll path used by
+  // upstream Weasel.  Sharing that file name lets stale Weasel CLSID/TIP
+  // registrations instantiate the ReVar DLL and creates ghost IME state across
+  // windows.  Keep the source filenames from the build output, but install the
+  // registered TSF DLL under a ReVar-specific system name.
   std::wstring srcFileName = L"weasel";
 
   srcFileName += ext;
@@ -136,7 +141,7 @@ int install_ime_file(std::wstring& srcPath,
   srcPath = std::wstring(drive) + dir + srcFileName;
 
   GetSystemDirectoryW(path, _countof(path));
-  std::wstring destPath = std::wstring(path) + L"\\weasel" + ext;
+  std::wstring destPath = std::wstring(path) + L"\\revar_input" + ext;
 
   int retval = 0;
   // 复制 .dll/.ime 到系统目录
@@ -168,7 +173,8 @@ int install_ime_file(std::wstring& srcPath,
         std::wstring srcPathARM32 = srcPath;
         ireplace_last(srcPathARM32, ext, L"ARM" + ext);
 
-        std::wstring destPathARM32 = std::wstring(sysarm32) + L"\\weasel" + ext;
+        std::wstring destPathARM32 =
+            std::wstring(sysarm32) + L"\\revar_input" + ext;
         if (!copy_file(srcPathARM32, destPathARM32)) {
           MSG_NOT_SILENT_ID_CAP(silent, destPathARM32.c_str(),
                                 IDS_STR_INSTALL_FAILED, MB_ICONERROR | MB_OK);
@@ -232,11 +238,10 @@ int uninstall_ime_file(const std::wstring& ext,
   WCHAR path[MAX_PATH];
   GetSystemDirectoryW(path, _countof(path));
   std::wstring imePath(path);
-  imePath += L"\\weasel" + ext;
+  imePath += L"\\revar_input" + ext;
   retval += func(imePath, false, false, false, false, silent);
   delete_file(imePath);
   if (is_wow64()) {
-    retval += func(imePath, false, true, false, false, silent);
     PVOID OldValue = NULL;
     if (Wow64DisableWow64FsRedirection(&OldValue) == FALSE) {
       MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRCANCELFSREDIRECT,
@@ -247,7 +252,8 @@ int uninstall_ime_file(const std::wstring& ext,
     if (is_arm64_machine()) {
       WCHAR sysarm32[MAX_PATH];
       if (get_wow_arm32_system_dir(sysarm32, _countof(sysarm32)) > 0) {
-        std::wstring imePathARM32 = std::wstring(sysarm32) + L"\\weasel" + ext;
+        std::wstring imePathARM32 =
+          std::wstring(sysarm32) + L"\\revar_input" + ext;
         retval += func(imePathARM32, false, true, true, false, silent);
         delete_file(imePathARM32);
       }
@@ -261,6 +267,11 @@ int uninstall_ime_file(const std::wstring& ext,
       delete_file(imePathARM64);
     }
 
+    // With WOW64 filesystem redirection disabled, regsvr32.exe resolves to the
+    // native 64-bit tool and imePath resolves to System32\revar_input.dll.
+    // Without this pass, uninstall can delete the x64 DLL but leave the native
+    // HKCR/CTF registration behind, which later shows up as an unavailable IME.
+    retval += func(imePath, false, true, false, false, silent);
     delete_file(imePath);
     if (Wow64RevertWow64FsRedirection(OldValue) == FALSE) {
       MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRRECOVERFSREDIRECT,
@@ -374,7 +385,7 @@ int install(bool hant, bool silent) {
   std::wstring rootDir = std::wstring(drive) + dir;
   rootDir.pop_back();
   auto ret = SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_REG_KEY, L"WeaselRoot",
-                            rootDir.c_str(), REG_SZ);
+                            rootDir.c_str(), REG_SZ, true);
   if (FAILED(HRESULT_FROM_WIN32(ret))) {
     MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRWRITEWEASELROOT,
                           IDS_STR_INSTALL_FAILED, MB_ICONERROR | MB_OK);
@@ -383,7 +394,7 @@ int install(bool hant, bool silent) {
 
   const std::wstring executable = L"WeaselServer.exe";
   ret = SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_REG_KEY, L"ServerExecutable",
-                       executable.c_str(), REG_SZ);
+                       executable.c_str(), REG_SZ, true);
   if (FAILED(HRESULT_FROM_WIN32(ret))) {
     MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRREGIMEWRITESVREXE,
                           IDS_STR_INSTALL_FAILED, MB_ICONERROR | MB_OK);
@@ -436,44 +447,33 @@ int uninstall(bool silent) {
   // 注销输入法
   int retval = 0;
 
-  const WCHAR KEY[] = L"Software\\Rime\\Weasel";
-  HKEY hKey;
-  LSTATUS ret = RegOpenKey(HKEY_CURRENT_USER, KEY, &hKey);
-  if (ret == ERROR_SUCCESS) {
-    DWORD type = 0;
-    DWORD data = 0;
-    DWORD len = sizeof(data);
-    ret = RegQueryValueEx(hKey, L"Hant", NULL, &type, (LPBYTE)&data, &len);
-    if (ret == ERROR_SUCCESS && type == REG_DWORD) {
-      HMODULE hInputDLL = LoadLibrary(TEXT("input.dll"));
-      if (hInputDLL) {
-        PTF_INSTALLLAYOUTORTIP pfnInstallLayoutOrTip;
-        pfnInstallLayoutOrTip = (PTF_INSTALLLAYOUTORTIP)GetProcAddress(
-            hInputDLL, "InstallLayoutOrTip");
-        if (pfnInstallLayoutOrTip) {
-          if (data != 0)
-            (*pfnInstallLayoutOrTip)(PSZTITLE_HANT, ILOT_UNINSTALL);
-          else
-            (*pfnInstallLayoutOrTip)(PSZTITLE_HANS, ILOT_UNINSTALL);
-        }
-        FreeLibrary(hInputDLL);
-      }
+  // Remove both ReVar language-list TIPs unconditionally.  The previous code
+  // only removed the profile selected in HKCU\Software\Rime\ReVarInput\Hant;
+  // if that key was missing, or if the user manually added another profile in
+  // Windows Settings, the user language list retained a dead TIP and Settings
+  // displayed it as "Unavailable input method".
+  HMODULE hInputDLL = LoadLibrary(TEXT("input.dll"));
+  if (hInputDLL) {
+    PTF_INSTALLLAYOUTORTIP pfnInstallLayoutOrTip =
+        (PTF_INSTALLLAYOUTORTIP)GetProcAddress(hInputDLL, "InstallLayoutOrTip");
+    if (pfnInstallLayoutOrTip) {
+      (*pfnInstallLayoutOrTip)(PSZTITLE_HANS, ILOT_UNINSTALL);
+      (*pfnInstallLayoutOrTip)(PSZTITLE_HANT, ILOT_UNINSTALL);
     }
-    RegCloseKey(hKey);
+    FreeLibrary(hInputDLL);
   }
 
   // IMM/.ime support removed; only uninstall TSF/.dll
   retval += uninstall_ime_file(L".dll", silent, &register_text_service);
 
   // 清除注册信息
-  RegDeleteKey(HKEY_LOCAL_MACHINE, WEASEL_REG_KEY);
-  RegDeleteKey(HKEY_LOCAL_MACHINE, RIME_REG_KEY);
+  auto flag_wow64 = is_wow64() ? KEY_WOW64_64KEY : 0;
+  RegDeleteKeyEx(HKEY_LOCAL_MACHINE, WEASEL_REG_KEY, flag_wow64, 0);
 
   // delete WER register,
   // "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\Windows Error
   // Reporting\\LocalDumps\\WeaselServer.exe" no WOW64 redirect
 
-  auto flag_wow64 = is_wow64() ? KEY_WOW64_64KEY : 0;
   RegDeleteKeyEx(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, flag_wow64, 0);
   if (retval)
     return 1;
@@ -488,7 +488,7 @@ bool has_installed() {
   WCHAR path[MAX_PATH];
   GetSystemDirectory(path, _countof(path));
   std::wstring sysPath(path);
-  DWORD attr = GetFileAttributesW((sysPath + L"\\weasel.dll").c_str());
+  DWORD attr = GetFileAttributesW((sysPath + L"\\revar_input.dll").c_str());
   return (attr != INVALID_FILE_ATTRIBUTES &&
           !(attr & FILE_ATTRIBUTE_DIRECTORY));
 }

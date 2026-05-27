@@ -1,7 +1,7 @@
 ﻿#pragma once
 
 #define WEASEL_CODE_NAME "ReVar Input"
-#define WEASEL_REG_KEY L"Software\\Rime\\Weasel"
+#define WEASEL_REG_KEY L"Software\\Rime\\ReVarInput"
 #define RIME_REG_KEY L"Software\\Rime"
 
 #define STRINGIZE(x) #x

@@ -30,8 +30,26 @@ WeaselTSF::WeaselTSF() {
   _fTestKeyDownPending = FALSE;
   _fTestKeyUpPending = FALSE;
   _fRevarDetachKeyPending = FALSE;
+  _fRevarMenuKeyPending = FALSE;
+  _fRevarCandidateAdjustMode = FALSE;
+  _fRevarCandidateAdjustKeyPending = FALSE;
+  _revarCandidateAdjustPosition = 0;
+  _revarCandidateAdjustGap = 18;
+  _revarCandidateAdjustXOffset = 0;
+  _revarCandidateAdjustYOffset = 0;
+  _revarCandidateAdjustOriginalPosition = 0;
+  _revarCandidateAdjustOriginalGap = 18;
+  _revarCandidateAdjustOriginalXOffset = 0;
+  _revarCandidateAdjustOriginalYOffset = 0;
+  SetRectEmpty(&_revarCandidateAdjustAnchorRect);
   _fRevarTransparentKeyDownPending = FALSE;
   _fRevarTransparentUIActive = FALSE;
+  _fRevarHasLastNonEmptyContext = FALSE;
+  _fRevarHasAnchorRect = FALSE;
+  SetRectEmpty(&_revarAnchorRect);
+  _fRevarHasLastCompositionRect = FALSE;
+  SetRectEmpty(&_revarLastCompositionRect);
+  _pRevarRawRange = nullptr;
 
   _fCUASWorkaroundTested = _fCUASWorkaroundEnabled = FALSE;
 

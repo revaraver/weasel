@@ -27,7 +27,9 @@ using PDWR = an<DirectWriteResources>;
 //
 class UI {
  public:
-  UI() : pimpl_(0), in_server_(false) {}
+  UI() : pimpl_(0), in_server_(false), has_pending_input_pos_(false) {
+    SetRectEmpty(&pending_input_pos_);
+  }
 
   virtual ~UI() {
     if (pimpl_)
@@ -89,6 +91,8 @@ class UI {
   UIStyle style_;
   UIStyle ostyle_;
   bool in_server_;
+  RECT pending_input_pos_;
+  bool has_pending_input_pos_;
   std::function<void(size_t* const, size_t* const, bool* const, bool* const)>
       _UICallback;
 };

@@ -3,10 +3,19 @@
 #include "WeaselTSF.h"
 #include "CandidateList.h"
 #include <KeyEvent.h>
+#include <RevarDevTrace.h>
+#include <fstream>
 #include <math.h>
+#include <sstream>
 
 using namespace std;
 using namespace weasel;
+
+namespace {
+void WriteRevarCandidateDebugLog(const std::wstring& line) {
+  RevarTraceLog(L"cand", line);
+}
+}  // namespace
 
 CCandidateList::CCandidateList(com_ptr<WeaselTSF> pTextService)
     : _ui(make_unique<UI>()), _tsf(pTextService), _pbShow(TRUE) {
@@ -74,6 +83,15 @@ STDMETHODIMP CCandidateList::GetGUID(GUID* pguid) {
 }
 
 STDMETHODIMP CCandidateList::Show(BOOL showCandidateWindow) {
+  {
+    if (RevarTraceEnabled()) {
+      std::wstringstream dbg;
+      dbg << L"cand Show request=" << showCandidateWindow
+          << L" ui_shown_before=" << (_ui ? _ui->IsShown() : FALSE)
+          << L" pbShow=" << _pbShow;
+      WriteRevarCandidateDebugLog(dbg.str());
+    }
+  }
   if (showCandidateWindow)
     _ui->Show();
   else
@@ -199,6 +217,19 @@ STDMETHODIMP CCandidateList::FinalizeExactCompositionString() {
 }
 
 void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {
+  {
+    if (RevarTraceEnabled()) {
+      std::wstringstream dbg;
+      dbg << L"cand UpdateUI status_composing=" << status.composing
+          << L" ctx_empty=" << ctx.empty()
+          << L" cand=" << ctx.cinfo.candies.size()
+          << L" highlighted=" << ctx.cinfo.highlighted
+          << L" preedit_len=" << ctx.preedit.str.length()
+          << L" aux_len=" << ctx.aux.str.length()
+          << L" inline_preedit=" << _ui->style().inline_preedit;
+      WriteRevarCandidateDebugLog(dbg.str());
+    }
+  }
   if (_ui->style().inline_preedit) {
     _ui->style().client_caps |= weasel::INLINE_PREEDIT_CAPABLE;
   } else {
@@ -217,11 +248,55 @@ void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {
     Show(FALSE);
 }
 
+void CCandidateList::UpdateUIAtPosition(const Context& ctx,
+                                        const Status& status,
+                                        RECT const& rc) {
+  {
+    if (RevarTraceEnabled()) {
+      std::wstringstream dbg;
+      dbg << L"cand UpdateUIAtPosition status_composing=" << status.composing
+          << L" ctx_empty=" << ctx.empty()
+          << L" cand=" << ctx.cinfo.candies.size()
+          << L" rc=(" << rc.left << L"," << rc.top << L"," << rc.right
+          << L"," << rc.bottom << L")";
+      WriteRevarCandidateDebugLog(dbg.str());
+    }
+  }
+  // Calibration overlay is moved repeatedly by arrow keys. Hide the previous
+  // layered window before refreshing at the new anchor so Windows does not keep
+  // stale translucent pixels around the old location.
+  Show(FALSE);
+  if (_ui->style().inline_preedit) {
+    _ui->style().client_caps |= weasel::INLINE_PREEDIT_CAPABLE;
+  } else {
+    _ui->style().client_caps &= ~weasel::INLINE_PREEDIT_CAPABLE;
+  }
+  // Set the target rect before updating/refeshing content. Otherwise the
+  // calibration window first lays out at the previous candidate position and
+  // then jumps to the preview anchor on the following MoveTo().
+  _ui->UpdateInputPosition(rc);
+  _ui->Update(ctx, status);
+  _ui->Refresh();
+  _UpdateUIElement();
+  if (status.composing)
+    Show(_pbShow);
+  else
+    Show(FALSE);
+}
+
 void CCandidateList::UpdateStyle(const UIStyle& sty) {
   _ui->style() = sty;
 }
 
 void CCandidateList::UpdateInputPosition(RECT const& rc) {
+  {
+    if (RevarTraceEnabled()) {
+      std::wstringstream dbg;
+      dbg << L"cand UpdateInputPosition rc=(" << rc.left << L"," << rc.top
+          << L"," << rc.right << L"," << rc.bottom << L")";
+      WriteRevarCandidateDebugLog(dbg.str());
+    }
+  }
   _ui->UpdateInputPosition(rc);
 }
 
@@ -350,12 +425,77 @@ void CCandidateList::_MakeUIWindow() {
 }
 
 void WeaselTSF::_UpdateUI(const Context& ctx, const Status& status) {
+  {
+    if (RevarTraceEnabled()) {
+      std::wstringstream dbg;
+      dbg << L"tsf _UpdateUI transparent=" << _IsRevarTransparentModeEnabled()
+          << L" shadow_len=" << _revarShadowBuffer.length()
+          << L" status_composing=" << status.composing
+          << L" ctx_empty=" << ctx.empty()
+          << L" cand=" << ctx.cinfo.candies.size()
+          << L" preedit_len=" << ctx.preedit.str.length()
+          << L" aux_len=" << ctx.aux.str.length();
+      WriteRevarCandidateDebugLog(dbg.str());
+    }
+  }
+  if (_IsRevarTransparentModeEnabled()) {
+    if (_revarShadowBuffer.empty()) {
+      _fRevarHasLastNonEmptyContext = FALSE;
+    } else if (!ctx.empty() && !ctx.cinfo.candies.empty()) {
+      _revarLastNonEmptyContext = ctx;
+      _revarLastNonEmptyStatus = status;
+      _revarLastNonEmptyStatus.composing = true;
+      _fRevarHasLastNonEmptyContext = TRUE;
+    } else if (_fRevarHasLastNonEmptyContext && ctx.empty() &&
+               ctx.cinfo.candies.empty()) {
+      Status transparent_status = _revarLastNonEmptyStatus;
+      transparent_status.composing = true;
+      {
+        if (RevarTraceEnabled()) {
+          std::wstringstream dbg;
+          dbg << L"tsf _UpdateUI reuse_last_non_empty shadow="
+              << _revarShadowBuffer << L" cached_cand="
+              << _revarLastNonEmptyContext.cinfo.candies.size()
+              << L" cached_preedit_len="
+              << _revarLastNonEmptyContext.preedit.str.length();
+          WriteRevarCandidateDebugLog(dbg.str());
+        }
+      }
+      if (_fRevarHasAnchorRect) {
+        _SetCompositionPosition(_revarAnchorRect);
+      }
+      _cand->UpdateUI(_revarLastNonEmptyContext, transparent_status);
+      return;
+    }
+  }
   if (_IsRevarTransparentModeEnabled() && !_revarShadowBuffer.empty() &&
       !status.composing) {
     Status transparent_status = status;
     transparent_status.composing = true;
+    {
+      if (RevarTraceEnabled()) {
+        std::wstringstream dbg;
+        dbg << L"tsf _UpdateUI force_composing shadow=" << _revarShadowBuffer;
+        WriteRevarCandidateDebugLog(dbg.str());
+      }
+    }
+    if (_fRevarHasAnchorRect) {
+      _SetCompositionPosition(_revarAnchorRect);
+    }
     _cand->UpdateUI(ctx, transparent_status);
     return;
+  }
+  if (_IsRevarTransparentModeEnabled() && !_revarShadowBuffer.empty() &&
+      _fRevarHasAnchorRect) {
+    if (RevarTraceEnabled()) {
+      std::wstringstream dbg;
+      dbg << L"tsf _UpdateUI seed_anchor_before_ui rc=(" << _revarAnchorRect.left
+          << L"," << _revarAnchorRect.top << L"," << _revarAnchorRect.right
+          << L"," << _revarAnchorRect.bottom << L") shadow="
+          << _revarShadowBuffer;
+      WriteRevarCandidateDebugLog(dbg.str());
+    }
+    _SetCompositionPosition(_revarAnchorRect);
   }
   _cand->UpdateUI(ctx, status);
 }
@@ -369,17 +509,30 @@ void WeaselTSF::_EndUI() {
 }
 
 void WeaselTSF::_ShowUI() {
+  WriteRevarCandidateDebugLog(L"tsf _ShowUI");
   _cand->Show(TRUE);
 }
 
 void WeaselTSF::_HideUI() {
+  {
+    if (RevarTraceEnabled()) {
+      std::wstringstream dbg;
+      dbg << L"tsf _HideUI transparent=" << _IsRevarTransparentModeEnabled()
+          << L" shadow_len=" << _revarShadowBuffer.length()
+          << L" shadow=" << _revarShadowBuffer;
+      WriteRevarCandidateDebugLog(dbg.str());
+    }
+  }
   if (_IsRevarTransparentModeEnabled() && !_revarShadowBuffer.empty()) {
     // 如果候选窗因为焦点/鼠标等外部事件被隐藏，transparent 状态机也要
     // 同步断开 shadow；raw text 已经在宿主里，不能再保留悬空候选态。
+    std::wstring shadow_before = _revarShadowBuffer;
     _revarShadowBuffer.clear();
+    _fRevarHasLastNonEmptyContext = FALSE;
     _revarTransparentPendingKeyUps.clear();
     _fRevarTransparentKeyDownPending = FALSE;
     _fRevarTransparentUIActive = FALSE;
+    _LogRevarShadowBufferChange(L"hide_ui_external_clear", shadow_before);
     m_client.ClearComposition();
   }
   _cand->Show(FALSE);

@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include <WeaselUI.h>
+#include <RevarDevTrace.h>
 #include "WeaselPanel.h"
 
 using namespace weasel;
@@ -37,25 +38,43 @@ class weasel::UIImpl {
 UINT_PTR UIImpl::timer = 0;
 
 void UIImpl::Show() {
-  if (!panel.IsWindow())
+  if (!panel.IsWindow()) {
+    RevarTraceLog(L"ui", L"UIImpl::Show skipped no_hwnd");
     return;
-  panel.ShowWindow(SW_SHOWNA);
+  }
+  CRect wr;
+  panel.GetWindowRect(&wr);
+  bool already_shown = shown && panel.IsWindowVisible();
+  if (RevarTraceEnabled()) {
+    std::wstringstream dbg;
+    dbg << L"UIImpl::Show before shown=" << shown
+        << L" already_shown=" << already_shown << L" hwnd=0x" << std::hex
+        << reinterpret_cast<uintptr_t>(panel.m_hWnd) << std::dec
+        << L" wr=" << RevarTraceRect(wr);
+    RevarTraceLog(L"ui", dbg.str());
+  }
   shown = true;
   if (timer) {
     KillTimer(panel.m_hWnd, AUTOHIDE_TIMER);
     timer = 0;
   }
+  if (already_shown)
+    return;
+  panel.ShowWindow(SW_SHOWNA);
 }
 
 void UIImpl::Hide() {
   if (!panel.IsWindow())
     return;
-  panel.ShowWindow(SW_HIDE);
+  bool already_hidden = !shown && !panel.IsWindowVisible();
   shown = false;
   if (timer) {
     KillTimer(panel.m_hWnd, AUTOHIDE_TIMER);
     timer = 0;
   }
+  if (already_hidden)
+    return;
+  panel.ShowWindow(SW_HIDE);
 }
 
 void UIImpl::ShowWithTimeout(size_t millisec) {
@@ -83,11 +102,25 @@ VOID CALLBACK UIImpl::OnTimer(_In_ HWND hwnd,
 }
 
 bool UI::Create(HWND parent) {
+  if (RevarTraceEnabled()) {
+    std::wstringstream dbg;
+    dbg << L"UI::Create parent=0x" << std::hex << reinterpret_cast<uintptr_t>(parent)
+        << std::dec << L" has_pimpl=" << (pimpl_ != nullptr)
+        << L" has_pending=" << has_pending_input_pos_
+        << L" pending=" << RevarTraceRect(pending_input_pos_);
+    RevarTraceLog(L"ui", dbg.str());
+  }
   if (pimpl_) {
+    if (pimpl_->panel.IsWindow()) {
+      return true;
+    }
     pimpl_->panel.Create(
         parent, 0, 0, WS_POPUP,
         WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
         0U, 0);
+    if (has_pending_input_pos_) {
+      pimpl_->panel.MoveTo(pending_input_pos_);
+    }
     return true;
   }
 
@@ -99,6 +132,9 @@ bool UI::Create(HWND parent) {
       parent, 0, 0, WS_POPUP,
       WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
       0U, 0);
+  if (has_pending_input_pos_) {
+    pimpl_->panel.MoveTo(pending_input_pos_);
+  }
   return true;
 }
 
@@ -114,6 +150,8 @@ void UI::Destroy(bool full) {
       pDWR.reset();
     }
   }
+  has_pending_input_pos_ = false;
+  SetRectEmpty(&pending_input_pos_);
 }
 
 bool UI::GetIsReposition() {
@@ -156,6 +194,22 @@ void UI::Refresh() {
 }
 
 void UI::UpdateInputPosition(RECT const& rc) {
+  {
+    if (RevarTraceEnabled()) {
+      std::wstringstream dbg;
+      dbg << L"UI::UpdateInputPosition rc=" << RevarTraceRect(rc)
+          << L" has_pimpl=" << (pimpl_ != nullptr)
+          << L" panel_hwnd="
+          << (pimpl_ ? reinterpret_cast<uintptr_t>(pimpl_->panel.m_hWnd) : 0)
+          << L" is_window=" << (pimpl_ && pimpl_->panel.IsWindow());
+      RevarTraceLog(L"ui", dbg.str());
+    }
+  }
+  // ReVar transparent/RVIR can compute the text-ext rect before the candidate
+
+  // stale/default position and then moves once the later rect arrives.
+  pending_input_pos_ = rc;
+  has_pending_input_pos_ = true;
   if (pimpl_ && pimpl_->panel.IsWindow()) {
     pimpl_->panel.MoveTo(rc);
   }

@@ -117,9 +117,13 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BOOL _ShowInlinePreedit(com_ptr<ITfContext> pContext,
                           const std::shared_ptr<weasel::Context> context);
   void _UpdateComposition(com_ptr<ITfContext> pContext);
+  void _UpdateCompositionAsyncOnly(com_ptr<ITfContext> pContext);
   BOOL _IsComposing();
   void _SetComposition(com_ptr<ITfComposition> pComposition);
   void _SetCompositionPosition(const RECT& rc);
+  void _SetRevarTransparentAnchorPosition(const RECT& rc);
+  BOOL _CaptureRevarTransparentAnchorPosition(com_ptr<ITfContext> pContext);
+  void _ClearRevarTransparentAnchorPosition();
   BOOL _UpdateCompositionWindow(com_ptr<ITfContext> pContext);
   void _FinalizeComposition();
   void _AbortComposition(bool clear = true);
@@ -154,6 +158,8 @@ class WeaselTSF : public ITfTextInputProcessorEx,
                         bool* const scroll_next);
 
  private:
+  friend class CReplaceRevarShadowEditSession;
+  friend class CInsertRevarRawTextEditSession;
   /* ui callback functions private */
   void _SelectCandidateOnCurrentPage(const size_t index);
   void _HandleMouseHoverEvent(const size_t index);
@@ -176,12 +182,27 @@ class WeaselTSF : public ITfTextInputProcessorEx,
                                 LPARAM lParam,
                                 BOOL keyDown,
                                 BOOL* pfEaten);
+  BOOL _TryHandleRevarMenuKey(ITfContext* pContext,
+                              WPARAM wParam,
+                              LPARAM lParam,
+                              BOOL keyDown,
+                              BOOL* pfEaten);
+  BOOL _TryHandleRevarCandidateAdjustKey(ITfContext* pContext,
+                                         WPARAM wParam,
+                                         LPARAM lParam,
+                                         BOOL keyDown,
+                                         BOOL* pfEaten);
+  RECT _GetRevarCandidateAdjustAnchorRect();
+  void _ShowRevarCandidateAdjustOverlay();
+  void _HideRevarCandidateAdjustOverlay(com_ptr<ITfContext> pContext);
   BOOL _TryHandleRevarTransparentKey(ITfContext* pContext,
                                      WPARAM wParam,
                                      LPARAM lParam,
                                      BOOL keyDown,
                                      BOOL* pfEaten);
   BOOL _IsRevarTransparentModeEnabled();
+  void _LogRevarShadowBufferChange(const wchar_t* reason,
+                                   const std::wstring& before);
   void _DetachShadowBuffer(com_ptr<ITfContext> pContext);
   BOOL _ReplaceRevarShadowBufferWithText(com_ptr<ITfContext> pContext,
                                           const std::wstring& text);
@@ -191,6 +212,8 @@ class WeaselTSF : public ITfTextInputProcessorEx,
       const std::wstring& text);
   BOOL _InsertRevarRawText(com_ptr<ITfContext> pContext,
                            const std::wstring& text);
+  void _SetRevarRawRange(com_ptr<ITfRange> pRange);
+  void _ClearRevarRawRange();
 
   BOOL _InitPreservedKey();
   void _UninitPreservedKey();
@@ -225,10 +248,31 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BYTE _lpbKeyState[256];
   BOOL _fTestKeyDownPending, _fTestKeyUpPending;
   BOOL _fRevarDetachKeyPending;
+  BOOL _fRevarMenuKeyPending;
+  BOOL _fRevarCandidateAdjustMode;
+  BOOL _fRevarCandidateAdjustKeyPending;
+  std::wstring _revarCandidateAdjustPath;
+  int _revarCandidateAdjustPosition;
+  int _revarCandidateAdjustGap;
+  int _revarCandidateAdjustXOffset;
+  int _revarCandidateAdjustYOffset;
+  int _revarCandidateAdjustOriginalPosition;
+  int _revarCandidateAdjustOriginalGap;
+  int _revarCandidateAdjustOriginalXOffset;
+  int _revarCandidateAdjustOriginalYOffset;
+  RECT _revarCandidateAdjustAnchorRect;
   BOOL _fRevarTransparentKeyDownPending;
   std::vector<UINT> _revarTransparentPendingKeyUps;
   BOOL _fRevarTransparentUIActive;
   std::wstring _revarShadowBuffer;
+  BOOL _fRevarHasLastNonEmptyContext;
+  weasel::Context _revarLastNonEmptyContext;
+  weasel::Status _revarLastNonEmptyStatus;
+  BOOL _fRevarHasAnchorRect;
+  RECT _revarAnchorRect;
+  BOOL _fRevarHasLastCompositionRect;
+  RECT _revarLastCompositionRect;
+  com_ptr<ITfRange> _pRevarRawRange;
 
   com_ptr<ITfContext> _pEditSessionContext;
   std::wstring _editSessionText;

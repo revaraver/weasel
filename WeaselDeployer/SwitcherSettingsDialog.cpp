@@ -116,7 +116,7 @@ LRESULT SwitcherSettingsDialog::OnGetSchemata(WORD, WORD, HWND hWndCtl, BOOL&) {
   if (is_wow64())
     hPath = _T("Software\\WOW6432Node\\Rime\\Weasel");
   else
-    hPath = _T("Software\\Rime\\Weasel");
+    hPath = _T("Software\\Rime\\ReVarInput");
   LSTATUS ret = RegOpenKey(HKEY_LOCAL_MACHINE, hPath.c_str(), &hKey);
   if (ret == ERROR_SUCCESS) {
     WCHAR value[MAX_PATH];

@@ -1,11 +1,21 @@
 #include "stdafx.h"
 #include "WeaselPanel.h"
 
+#include <RevarDevTrace.h>
+
 #include <utility>
 #include <ShellScalingApi.h>
 #include <VersionHelpers.hpp>
 #include <WeaselIPCData.h>
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <cwctype>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
 
 #include "VerticalLayout.h"
 #include "HorizontalLayout.h"
@@ -24,6 +34,440 @@
   ((((color & 0xff000000) >> 25) & 0xff) << 24) | (color & 0x00ffffff)
 
 #pragma comment(lib, "Shcore.lib")
+
+namespace {
+enum class RevarCandidateWindowPosition {
+  Auto,
+  Above,
+  Below,
+};
+
+struct RevarCandidateWindowConfig {
+  bool active = false;
+  RevarCandidateWindowPosition position = RevarCandidateWindowPosition::Auto;
+  int gap = 18;
+  int x_offset = 0;
+  int y_offset = 0;
+};
+
+struct RevarCandidateWindowOverride {
+  std::wstring path;
+  bool position_set = false;
+  bool gap_set = false;
+  bool x_offset_set = false;
+  bool y_offset_set = false;
+  RevarCandidateWindowPosition position = RevarCandidateWindowPosition::Auto;
+  int gap = 18;
+  int x_offset = 0;
+  int y_offset = 0;
+};
+
+std::string RevarTrim(std::string s) {
+  auto not_space = [](unsigned char c) { return !std::isspace(c); };
+  s.erase(s.begin(), std::find_if(s.begin(), s.end(), not_space));
+  s.erase(std::find_if(s.rbegin(), s.rend(), not_space).base(), s.end());
+  return s;
+}
+
+std::string RevarToLower(std::string s) {
+  s = RevarTrim(s);
+  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return s;
+}
+
+std::filesystem::path RevarInputConfigPath();
+
+std::string RevarValueAfterColon(const std::string& s) {
+  auto pos = s.find(':');
+  if (pos == std::string::npos)
+    return "";
+  return RevarTrim(s.substr(pos + 1));
+}
+
+std::string RevarStripQuotes(std::string s) {
+  s = RevarTrim(s);
+  if (s.length() >= 2 &&
+      ((s.front() == '"' && s.back() == '"') ||
+       (s.front() == '\'' && s.back() == '\''))) {
+    return s.substr(1, s.length() - 2);
+  }
+  return s;
+}
+
+std::wstring RevarToLowerWide(std::wstring s) {
+  std::transform(s.begin(), s.end(), s.begin(), [](wchar_t ch) {
+    return static_cast<wchar_t>(std::towlower(ch));
+  });
+  return s;
+}
+
+std::wstring RevarUtf8ToWide(const std::string& s) {
+  if (s.empty())
+    return L"";
+  int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+  if (len <= 0)
+    return std::wstring(s.begin(), s.end());
+  std::wstring out(static_cast<size_t>(len - 1), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, out.data(), len);
+  return out;
+}
+
+std::wstring RevarNormalizeHostPath(std::wstring path) {
+  std::replace(path.begin(), path.end(), L'/', L'\\');
+  std::wstring collapsed;
+  collapsed.reserve(path.size());
+  bool last_backslash = false;
+  for (wchar_t ch : path) {
+    if (ch == L'\\') {
+      if (!last_backslash)
+        collapsed.push_back(ch);
+      last_backslash = true;
+    } else {
+      collapsed.push_back(ch);
+      last_backslash = false;
+    }
+  }
+  return RevarToLowerWide(collapsed);
+}
+
+bool RevarPathEquals(const std::wstring& a, const std::wstring& b) {
+  return a == b;
+}
+
+std::wstring RevarGetForegroundProcessPathLower() {
+  HWND hwnd = GetForegroundWindow();
+  if (!hwnd)
+    return L"";
+  DWORD pid = 0;
+  GetWindowThreadProcessId(hwnd, &pid);
+  if (!pid)
+    return L"";
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (!process)
+    return L"";
+  std::vector<WCHAR> path(32768, L'\0');
+  DWORD size = static_cast<DWORD>(path.size());
+  BOOL ok = QueryFullProcessImageNameW(process, 0, path.data(), &size);
+  CloseHandle(process);
+  if (!ok)
+    return L"";
+  return RevarNormalizeHostPath(std::wstring(path.data(), size));
+}
+
+bool RevarIsPathInList(const std::wstring& path,
+                       const std::vector<std::wstring>& paths) {
+  for (const auto& item : paths) {
+    if (RevarPathEquals(path, item))
+      return true;
+  }
+  return false;
+}
+
+std::vector<std::wstring> RevarLoadExactHostPathList(
+    const std::string& list_name) {
+  std::vector<std::wstring> result;
+  std::ifstream in(RevarInputConfigPath());
+  bool in_list = false;
+  std::string line;
+  while (std::getline(in, line)) {
+    auto comment = line.find('#');
+    if (comment != std::string::npos)
+      line = line.substr(0, comment);
+    std::string trimmed = RevarTrim(line);
+    if (trimmed.empty())
+      continue;
+    if (trimmed == list_name + ":") {
+      in_list = true;
+      continue;
+    }
+    if (in_list && trimmed[0] == '-') {
+      std::string item = RevarStripQuotes(RevarTrim(trimmed.substr(1)));
+      if (!item.empty())
+        result.push_back(RevarNormalizeHostPath(RevarUtf8ToWide(item)));
+      continue;
+    }
+    if (in_list && trimmed.find(':') != std::string::npos &&
+        trimmed[0] != '-') {
+      in_list = false;
+    }
+  }
+  return result;
+}
+
+std::filesystem::path RevarInputConfigPath() {
+  WCHAR appdata[MAX_PATH] = {0};
+  DWORD len = GetEnvironmentVariableW(L"APPDATA", appdata, ARRAYSIZE(appdata));
+  if (len == 0 || len >= ARRAYSIZE(appdata))
+    return std::filesystem::path();
+  return std::filesystem::path(appdata) / L"Rime" / L"revar_input.yaml";
+}
+
+RevarCandidateWindowPosition ParseRevarCandidateWindowPosition(
+    const std::string& value) {
+  std::string lower = RevarToLower(value);
+  if (lower == "above" || lower == "top" || lower == "上" ||
+      lower == "上方") {
+    return RevarCandidateWindowPosition::Above;
+  }
+  if (lower == "below" || lower == "bottom" || lower == "下" ||
+      lower == "下方") {
+    return RevarCandidateWindowPosition::Below;
+  }
+  return RevarCandidateWindowPosition::Auto;
+}
+
+int RevarParseInt(const std::string& value, int fallback) {
+  std::string trimmed = RevarTrim(value);
+  if (trimmed.empty())
+    return fallback;
+  char* end = nullptr;
+  long parsed = std::strtol(trimmed.c_str(), &end, 10);
+  if (end == trimmed.c_str())
+    return fallback;
+  return static_cast<int>(parsed);
+}
+
+bool RevarParseBool(const std::string& value, bool fallback) {
+  std::string lower = RevarToLower(value);
+  if (lower == "true" || lower == "yes" || lower == "on" || lower == "1")
+    return true;
+  if (lower == "false" || lower == "no" || lower == "off" || lower == "0")
+    return false;
+  return fallback;
+}
+
+bool RevarLoadDefaultTransparentMode() {
+  std::ifstream in(RevarInputConfigPath());
+  bool default_mode_transparent = false;
+  bool transparent_feature_enabled = true;
+  bool in_transparent_mode = false;
+  std::string line;
+  while (std::getline(in, line)) {
+    auto comment = line.find('#');
+    if (comment != std::string::npos)
+      line = line.substr(0, comment);
+    std::string trimmed = RevarTrim(line);
+    if (trimmed.empty())
+      continue;
+    if (trimmed.rfind("default_mode:", 0) == 0) {
+      default_mode_transparent =
+          RevarToLower(RevarValueAfterColon(trimmed)) == "transparent";
+      continue;
+    }
+    if (trimmed == "transparent_mode:") {
+      in_transparent_mode = true;
+      continue;
+    }
+    if (trimmed.find(':') != std::string::npos && trimmed[0] != '-' &&
+        trimmed != "enabled:" && trimmed.rfind("enabled:", 0) != 0 &&
+        trimmed.find(' ') == std::string::npos) {
+      in_transparent_mode = false;
+    }
+    if (in_transparent_mode && trimmed.rfind("enabled:", 0) == 0) {
+      transparent_feature_enabled =
+          RevarParseBool(RevarValueAfterColon(trimmed), true);
+      continue;
+    }
+  }
+  return transparent_feature_enabled && default_mode_transparent;
+}
+
+bool RevarIsCodeModeActiveForPath(const std::wstring& host_path) {
+  if (RevarLoadDefaultTransparentMode())
+    return true;
+  if (host_path.empty())
+    return false;
+  const auto disabled_paths = RevarLoadExactHostPathList("disabled_exact_paths");
+  if (RevarIsPathInList(host_path, disabled_paths))
+    return false;
+  const auto enabled_paths = RevarLoadExactHostPathList("enabled_exact_paths");
+  return RevarIsPathInList(host_path, enabled_paths);
+}
+
+bool RevarIsControlledCandidateHostForPath(const std::wstring& host_path) {
+  if (RevarIsCodeModeActiveForPath(host_path))
+    return true;
+  if (host_path.empty())
+    return false;
+
+  // Candidate-window placement is a UI policy for any ReVar-controlled host,
+  // not a separate implementation per replacement mode.  RVIR/direct,
+  // SendInput raw, TSF replace, and explicit Backspace hosts must all share the
+  // same final placement path; otherwise one mode keeps the configured position
+  // while another flashes at the default Weasel location and then jumps.
+  const char* policy_lists[] = {
+      "tsf_replace_exact_paths",
+      "raw_unicode_exact_paths",
+      "direct_replace_exact_paths",
+      "backspace_unicode_exact_paths",
+  };
+  for (const auto* list_name : policy_lists) {
+    const auto paths = RevarLoadExactHostPathList(list_name);
+    if (RevarIsPathInList(host_path, paths))
+      return true;
+  }
+  return false;
+}
+
+void ApplyRevarCandidateWindowOverride(
+    RevarCandidateWindowConfig* result,
+    const RevarCandidateWindowOverride& override_config) {
+  if (!result)
+    return;
+  if (override_config.position_set)
+    result->position = override_config.position;
+  if (override_config.gap_set)
+    result->gap = override_config.gap;
+  if (override_config.x_offset_set)
+    result->x_offset = override_config.x_offset;
+  if (override_config.y_offset_set)
+    result->y_offset = override_config.y_offset;
+}
+
+RevarCandidateWindowConfig LoadRevarCandidateWindowConfig() {
+  RevarCandidateWindowConfig result;
+  std::wstring host_path = RevarGetForegroundProcessPathLower();
+  if (!RevarIsControlledCandidateHostForPath(host_path)) {
+    if (RevarTraceEnabled()) {
+      std::wstringstream dbg;
+      dbg << L"candidate_config inactive host=" << host_path;
+      RevarTraceLog(L"panel", dbg.str());
+    }
+    return result;
+  }
+  result.active = true;
+
+  std::ifstream in(RevarInputConfigPath());
+  if (!in)
+    return result;
+
+  bool in_candidate_window = false;
+  bool in_overrides = false;
+  bool have_current_override = false;
+  RevarCandidateWindowOverride current_override;
+  std::vector<RevarCandidateWindowOverride> overrides;
+  std::string line;
+  while (std::getline(in, line)) {
+    auto comment = line.find('#');
+    if (comment != std::string::npos)
+      line = line.substr(0, comment);
+    std::string trimmed = RevarTrim(line);
+    if (trimmed.empty())
+      continue;
+
+    if (trimmed == "candidate_window:") {
+      in_candidate_window = true;
+      in_overrides = false;
+      continue;
+    }
+    if (!in_candidate_window)
+      continue;
+
+    if (trimmed == "exact_path_overrides:" || trimmed == "per_exe:") {
+      in_overrides = true;
+      continue;
+    }
+
+    if (in_overrides && trimmed.rfind("- path:", 0) == 0) {
+      if (have_current_override && !current_override.path.empty())
+        overrides.push_back(current_override);
+      current_override = RevarCandidateWindowOverride();
+      have_current_override = true;
+      std::string path_value =
+          RevarStripQuotes(RevarValueAfterColon(trimmed.substr(1)));
+      current_override.path =
+          RevarNormalizeHostPath(RevarUtf8ToWide(path_value));
+      continue;
+    }
+
+    if (in_overrides && have_current_override) {
+      if (trimmed.rfind("position:", 0) == 0) {
+        current_override.position = ParseRevarCandidateWindowPosition(
+            RevarValueAfterColon(trimmed));
+        current_override.position_set = true;
+        continue;
+      }
+      if (trimmed.rfind("gap:", 0) == 0) {
+        current_override.gap =
+            RevarParseInt(RevarValueAfterColon(trimmed), current_override.gap);
+        current_override.gap_set = true;
+        continue;
+      }
+      if (trimmed.rfind("x_offset:", 0) == 0) {
+        current_override.x_offset = RevarParseInt(
+            RevarValueAfterColon(trimmed), current_override.x_offset);
+        current_override.x_offset_set = true;
+        continue;
+      }
+      if (trimmed.rfind("y_offset:", 0) == 0) {
+        current_override.y_offset = RevarParseInt(
+            RevarValueAfterColon(trimmed), current_override.y_offset);
+        current_override.y_offset_set = true;
+        continue;
+      }
+    }
+
+    if (trimmed.find(':') != std::string::npos && trimmed[0] != '-' &&
+        trimmed.find(' ') == std::string::npos &&
+        trimmed.rfind("position:", 0) != 0 &&
+        trimmed.rfind("candidate_position:", 0) != 0 &&
+        trimmed.rfind("candidate_window_position:", 0) != 0 &&
+        trimmed.rfind("gap:", 0) != 0 &&
+        trimmed.rfind("x_offset:", 0) != 0 &&
+        trimmed.rfind("y_offset:", 0) != 0 &&
+        trimmed != "exact_path_overrides:" && trimmed != "per_exe:") {
+      in_candidate_window = false;
+      in_overrides = false;
+      continue;
+    }
+
+    if (!in_overrides &&
+        (trimmed.rfind("candidate_position:", 0) == 0 ||
+         trimmed.rfind("candidate_window_position:", 0) == 0 ||
+         trimmed.rfind("position:", 0) == 0)) {
+      result.position =
+          ParseRevarCandidateWindowPosition(RevarValueAfterColon(trimmed));
+      continue;
+    }
+    if (!in_overrides && trimmed.rfind("gap:", 0) == 0) {
+      result.gap = RevarParseInt(RevarValueAfterColon(trimmed), result.gap);
+      continue;
+    }
+    if (!in_overrides && trimmed.rfind("x_offset:", 0) == 0) {
+      result.x_offset =
+          RevarParseInt(RevarValueAfterColon(trimmed), result.x_offset);
+      continue;
+    }
+    if (!in_overrides && trimmed.rfind("y_offset:", 0) == 0) {
+      result.y_offset =
+          RevarParseInt(RevarValueAfterColon(trimmed), result.y_offset);
+      continue;
+    }
+  }
+  if (have_current_override && !current_override.path.empty())
+    overrides.push_back(current_override);
+  for (const auto& override_config : overrides) {
+    if (RevarPathEquals(host_path, override_config.path)) {
+      ApplyRevarCandidateWindowOverride(&result, override_config);
+      break;
+    }
+  }
+  {
+    if (RevarTraceEnabled()) {
+      std::wstringstream dbg;
+      dbg << L"candidate_config active host=" << host_path
+          << L" position=" << static_cast<int>(result.position)
+          << L" gap=" << result.gap
+          << L" x_offset=" << result.x_offset
+          << L" y_offset=" << result.y_offset;
+      RevarTraceLog(L"panel", dbg.str());
+    }
+  }
+  return result;
+}
+}  // namespace
 
 template <class t0, class t1, class t2>
 inline void LoadIconNecessary(t0& a, t1& b, t2& c, int d) {
@@ -161,7 +605,6 @@ void WeaselPanel::Refresh() {
       (m_style.inline_preedit && m_candidateCount == 0) && !show_tips;
   hide_candidates = inline_no_candidates ||
                     (margin_negative && !show_tips && !show_schema_menu);
-
   // only RedrawWindow if no need to hide candidates window, or
   // inline_no_candidates
   if (!hide_candidates || inline_no_candidates) {
@@ -1156,6 +1599,8 @@ LRESULT WeaselPanel::OnDestroy(UINT uMsg,
   m_hoverIndex = -1;
   m_lastMousePos = {-1, -1};
   m_sticky = false;
+  m_lastWindowPos = {-1, -1};
+  m_hasLastWindowPos = false;
   delete m_layout;
   m_layout = NULL;
   return 0;
@@ -1170,9 +1615,23 @@ LRESULT WeaselPanel::OnDpiChanged(UINT uMsg,
 }
 
 void WeaselPanel::MoveTo(RECT const& rc) {
-  if (!m_layout)
+  {
+    if (RevarTraceEnabled()) {
+      std::wstringstream dbg;
+      dbg << L"MoveTo input_rc=" << RevarTraceRect(rc)
+          << L" old_input=" << RevarTraceRect(m_inputPos)
+          << L" has_layout=" << (m_layout != nullptr)
+          << L" sticky=" << m_sticky
+          << L" ctx_empty=" << m_ctx.empty();
+      RevarTraceLog(L"panel", dbg.str());
+    }
+  }
+  if (!m_layout) {
+    RevarTraceLog(L"panel", L"MoveTo skipped no_layout");
     return;  // avoid handling nullptr in _RepositionWindow
+  }
   m_redraw_by_monitor_change = false;
+
   // The conditions for resetting the sticky state:
   // 1. When the input session ends (ctx.empty() is true)
   // 2. When the input position changes significantly (the position change
@@ -1220,8 +1679,10 @@ void WeaselPanel::MoveTo(RECT const& rc) {
 }
 
 void WeaselPanel::_RepositionWindow(const bool& adj) {
+  const long long t0 = RevarTraceNowUs();
   RECT rcWorkArea;
   memset(&rcWorkArea, 0, sizeof(rcWorkArea));
+
   HMONITOR hMonitor = MonitorFromRect(m_inputPos, MONITOR_DEFAULTTONEAREST);
   if (hMonitor) {
     MONITORINFO info;
@@ -1267,11 +1728,30 @@ void WeaselPanel::_RepositionWindow(const bool& adj) {
     x = rcWorkArea.right;  // over workarea right
   if (x < rcWorkArea.left)
     x = rcWorkArea.left;  // over workarea left
-  // show panel above the input focus if we're around the bottom
-  if (y > rcWorkArea.bottom || m_sticky) {
+  const auto candidate_window = LoadRevarCandidateWindowConfig();
+  const bool force_above = candidate_window.active &&
+                           candidate_window.position ==
+                               RevarCandidateWindowPosition::Above;
+  const bool force_below = candidate_window.active &&
+                           candidate_window.position ==
+                               RevarCandidateWindowPosition::Below;
+
+  if (candidate_window.active) {
+    x += DPI_SCALE(candidate_window.x_offset);
+    if (x > rcWorkArea.right)
+      x = rcWorkArea.right;
+    if (x < rcWorkArea.left)
+      x = rcWorkArea.left;
+  }
+
+  // Compatible mode keeps the original Weasel position behavior. ReVar's
+  // candidate_window position/gap/offset policy is applied only in
+  // code/transparent mode, optionally with per-exe overrides.
+  if (force_above || (!force_below && (y > rcWorkArea.bottom || m_sticky))) {
     if (!m_sticky)
-      m_sticky = true;
-    y = m_inputPos.top - height - 6;  // over workarea bottom
+      m_sticky = !force_above;
+    int revar_gap = candidate_window.active ? DPI_SCALE(candidate_window.gap) : 0;
+    y = m_inputPos.top - height - revar_gap;
     if (DPI_SCALE(m_style.shadow_radius) &&
         DPI_SCALE(m_style.shadow_offset_y) > 0)
       y -= DPI_SCALE(m_style.shadow_offset_y);
@@ -1283,12 +1763,62 @@ void WeaselPanel::_RepositionWindow(const bool& adj) {
                ? m_layout->offsetY
                : (m_layout->offsetY / 2);
   }
+  if (force_below) {
+    m_sticky = false;
+    m_istorepos = false;
+  }
+  if (candidate_window.active)
+    y += DPI_SCALE(candidate_window.y_offset);
   if (y < rcWorkArea.top)
     y = rcWorkArea.top;  // over workarea top
-  // memorize adjusted position (to avoid window bouncing on height change)
-  m_inputPos.bottom = y;
+  if (y > rcWorkArea.bottom)
+    y = rcWorkArea.bottom;  // force-below/above still keeps panel visible
+  // For ReVar controlled candidate windows, y/x offsets are presentation
+  // policy, not caret/input state.  Do not write the final window y back into
+  // m_inputPos, or the next Refresh()/MoveTo() will apply the same offset again
+  // and the calibration overlay will drift/jump on every arrow-key preview.
+  if (!candidate_window.active)
+    m_inputPos.bottom = y;
+  if (m_hasLastWindowPos && m_lastWindowPos.x == x && m_lastWindowPos.y == y &&
+      !m_redraw_by_monitor_change) {
+    if (RevarTraceEnabled()) {
+      std::wstringstream dbg;
+      dbg << L"Reposition skip_same_pos x=" << x << L" y=" << y
+          << L" active=" << candidate_window.active
+          << L" us=" << (RevarTraceNowUs() - t0);
+      RevarTraceLog(L"panel", dbg.str());
+    }
+    return;
+  }
+  m_lastWindowPos = {x, y};
+  m_hasLastWindowPos = true;
   SetWindowPos(HWND_TOPMOST, x, y, 0, 0,
                SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
+
+  {
+    CRect wr_after;
+    GetWindowRect(&wr_after);
+    if (RevarTraceEnabled()) {
+      std::wstringstream dbg;
+      dbg << L"Reposition final x=" << x << L" y=" << y
+          << L" input=" << RevarTraceRect(m_inputPos)
+          << L" window_before=" << RevarTraceRect(rcWindow)
+          << L" window_after=" << RevarTraceRect(wr_after)
+          << L" work=" << RevarTraceRect(rcWorkArea)
+          << L" active=" << candidate_window.active
+          << L" pos=" << static_cast<int>(candidate_window.position)
+          << L" gap=" << candidate_window.gap
+          << L" xoff=" << candidate_window.x_offset
+          << L" yoff=" << candidate_window.y_offset
+          << L" force_above=" << force_above
+          << L" force_below=" << force_below
+          << L" sticky=" << m_sticky
+          << L" istore=" << m_istorepos
+          << L" adj=" << adj
+          << L" us=" << (RevarTraceNowUs() - t0);
+      RevarTraceLog(L"panel", dbg.str());
+    }
+  }
 }
 
 void WeaselPanel::_TextOut(const CRect& rc,
